@@ -227,8 +227,11 @@ function updateMainPage(BookAvailability) {
     else {
         // add each Available book to Library view
         for (let i=0; i<Available.length; i++) {
-            // $('#available_alert').removeClass("d-none");
-            document.getElementById("available_now").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Available[i].cover+"' class='cover' alt='"+Available[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Available[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Available[i].author+"</p><p class='text-nowrap text-truncate mb-3'><em>"+Available[i].type+"</em></p><a type='button' class='btn btn-primary available' href='"+Available[i].URL+"' target='_blank'>Checkout</a></div></div>";   
+            document.getElementById("available_now").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Available[i].cover+"' class='cover' alt='"+Available[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Available[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Available[i].author+"</p><p class='text-nowrap text-truncate mb-3'><em>"+Available[i].type+"</em></p><a type='button' class='btn btn-primary available' href='"+Available[i].URL+"' target='_blank'>Checkout</a></div></div>";
+        }
+        // if books are available, prompt user to leave a review
+        if (Available.length > 0) {
+            document.getElementById("available_now").innerHTML += "<div class='d-flex align-items-center border-bottom pt-2 pb-3 mb-2'><h5 class='p-2 m-0'>Find a good book?</h5><a type='button' class='btn btn-success' href='https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik/review' target='_blank'>Leave a review!</a></div>";
         }
         // sort Hold books by increasing expected waits (in days)
         Holds.sort((a, b) => (a.estimatedWait == undefined) ? 1 : (a.estimatedWait > b.estimatedWait) ? 1 : -1);
@@ -322,7 +325,8 @@ function saveUserData(e) {
     $('#overdrive_fail').addClass("d-none");
     document.getElementById("goodreadsID").style.borderColor = "";
     document.getElementById("overdriveURL").style.borderColor = "";
-    // user new user data to refresh Library
+    // use new user data to refresh Library & track refresh via Google Analytics
+    _gaq.push(['_trackEvent', 'Data', 'refreshed', 'updated settings']);
     reloadData(goodreadsID, overdriveURL);
 }
 

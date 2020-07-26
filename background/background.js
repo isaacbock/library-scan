@@ -187,6 +187,8 @@ function queryGoodreads(goodreadsID, overdriveURL) {
  */
 async function queryOverdrive(ToRead, overdriveURL) { 
     currently_scanning = true;
+    let available_count = 0;
+    let unavailable_count = 0;
     console.log("Scanning OverDrive for titles:");
     // as books are identified on OverDrive, add to BookAvailability array
     let BookAvailability = [];
@@ -220,6 +222,12 @@ async function queryOverdrive(ToRead, overdriveURL) {
                         let URL = overdriveURL+"/media/"+book.id;
                         console.log({title: title, author:author, type:type, cover:cover, available:available, estimatedWait:estimatedWait, URL:URL});
                         BookAvailability.push({title: title, author:author, type:type, cover:cover, available:available, estimatedWait:estimatedWait, URL:URL});
+                        if (available) {
+                            available_count++;
+                        }
+                        else {
+                            unavailable_count++;
+                        }
                     } catch (error) {
                         console.log(ToRead[i].title + " by " + ToRead[i].author + " metadata could not be loaded.")
                     }
@@ -255,6 +263,9 @@ async function queryOverdrive(ToRead, overdriveURL) {
                 // end data refesh
                 currently_scanning = false;
                 _gaq.push(['_trackEvent', 'OverDrive', 'fetched', 'success', BookAvailability.length]);
+                _gaq.push(['_trackEvent', 'OverDrive', 'count', 'available', available_count]);
+                _gaq.push(['_trackEvent', 'OverDrive', 'count', 'hold', unavailable_count]);
+                updateBadgeCount(available_count);
                 console.log("OverDrive scan complete.");
             }
         })

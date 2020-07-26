@@ -3,7 +3,7 @@
     "name": "Library Scan: OverDrive + Goodreads",
     "short_name": "Library Scan",
     "description": "Scan any OverDrive library for available eBooks & audiobooks from your Goodreads to-read shelf.",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "Isaac B.",
     "icons": {
         "16": "icons/icon16.png",

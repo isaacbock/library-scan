@@ -89,6 +89,7 @@ function getElapsedTime() {
             if (elapsedTime > 60*24 && !currently_scanning) {
                 _gaq.push(['_trackEvent', 'Data', 'refreshed', 'automatically']);
                 queryGoodreads(goodreadsID, overdriveURL);
+                elapsedTime = 0;
             }
             // if time elapsed is zero minutes, display as "Last Refreshed: just now"
             if (elapsedTime===0) {
@@ -194,7 +195,7 @@ async function queryOverdrive(ToRead, overdriveURL) {
     let BookAvailability = [];
     // for each book within ToRead, fetch its title/author pairing on user's local OverDrive website
     for (let i=0; i<ToRead.length && currently_scanning; i++) {
-        await fetchWithTimeout(overdriveURL+"/search?query="+encodeURIComponent(ToRead[i].title+" "+ToRead[i].author))
+        await fetchWithTimeout(overdriveURL+"/search/title?query="+encodeURIComponent(ToRead[i].title)+"&creator="+encodeURIComponent(ToRead[i].author))
         .then(res => res.text())
         .then(function(html) {
             // identify book availability data in response & prepare for JSON conversion

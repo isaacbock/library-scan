@@ -1,8 +1,8 @@
 # Library Scan 
 <p>
   <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/chrome-web-store/v/mfckggnkebdpaocogfekaaicafooeiik" alt="Chrome Web Store"></a>
-  <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/badge/books%20scanned-1k%2B-blue" alt="Books Scanned"></a>
-  <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/badge/books%20found-686%2B-blue" alt="Books Found"></a>
+  <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/badge/books%20scanned-7k%2B-blue" alt="Books Scanned"></a>
+  <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/badge/books%20found-6.1k%2B-blue" alt="Books Found"></a>
   <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/chrome-web-store/users/mfckggnkebdpaocogfekaaicafooeiik?color=blue" alt="Users"><a>
   <a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik"><img src="https://img.shields.io/chrome-web-store/stars/mfckggnkebdpaocogfekaaicafooeiik" alt="Rating"></a>
   <a href="https://www.goodreads.com"><img src="https://img.shields.io/website?down_color=red&label=Goodreads&url=https%3A%2F%2Fwww.goodreads.com%2Fapi" alt="Goodreads Status"></a>

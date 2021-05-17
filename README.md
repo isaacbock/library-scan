@@ -26,7 +26,7 @@ Scan any OverDrive library for available eBooks & audiobooks from your Goodreads
 *Google Analytics used to collect extension usage statistics & help improve user experience. To opt-out of Google Analytics tracking, please visit http://tools.google.com/dlpage/gaoptout or set up a filter within an ad blocker tool.*
 
 ## Installation
-<a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik" target="_blank" rel="noopener"><img src="https://github.com/isaactbock/library-scan/blob/master/media/Chrome%20Web%20Store.png?raw=true" height=100 alt="Available in the Chrome Web Store"></a>
+<a href="https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik" target="_blank" rel="noopener"><img src="https://github.com/isaacbock/library-scan/blob/master/media/Chrome%20Web%20Store.png?raw=true" height=100 alt="Available in the Chrome Web Store"></a>
 ## Permissions
 Library Scan only fetches data from public Goodreads profiles and OverDrive library pages.
 ```
@@ -35,6 +35,8 @@ https://*.overdrive.com/*
 ```
 
 ## Changelog
+* Version 1.0.2
+  * Improved book matching algorithm
 * Version 1.0.1 (07/26/20)
 	* Improved analytics
 * Version 1.0.0 (07/25/20)

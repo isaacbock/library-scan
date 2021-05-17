@@ -24,15 +24,13 @@ _gaq.push(['_setAccount', _AnalyticsCode]);
  */
 let carousel_message_timer;
 
-// Recieve messages from popup.js (front-end) and respond with data
+// Receive messages from popup.js (front-end) and respond with data
 chrome.runtime.onMessage.addListener(
     function(request, sender, sendResponse) {
         // Request to refresh book data
         if (request.msg === "goodreads" && !currently_scanning) {
             // Begin by refreshing all titles from Goodreads (which will then progress to identifying these title on OverDrive)
             queryGoodreads(request.goodreadsID, request.overdriveURL);
-            // Reset available book badge count to zero
-            updateBadgeCount(0);
             // Update Loading view carousel messages every 10 seconds
             let carousel_messages=["We'll scan the most recent 200 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.","We'll automatically refresh your library every 24 hours so titles are always up-to-date.","Toggle between eBooks and Audiobooks to find exactly what you're looking for."];
             let carousel_position=1;
@@ -124,6 +122,7 @@ function getElapsedTime() {
  */
 function queryGoodreads(goodreadsID, overdriveURL) {
     currently_scanning = true;
+    updateBadgeCount(0)
     // fetch data using Goodreads API
     fetch('https://www.goodreads.com/review/list?v=2&id='+goodreadsID+'&shelf=to-read&sort=position&order=d&per_page=200&key='+apiKeys.goodreads, {
         method: "GET",
@@ -172,6 +171,7 @@ function queryGoodreads(goodreadsID, overdriveURL) {
         currently_scanning = false;
         clearInterval(carousel_message_timer);
         _gaq.push(['_trackEvent', 'Goodreads', 'fetched', 'failed']);
+        updateBadgeCount(0, true);
         chrome.runtime.sendMessage({
             msg: "GoodreadsError",
         });
@@ -275,6 +275,7 @@ async function queryOverdrive(ToRead, overdriveURL) {
             console.log('OverDrive fetch Error ', err);
             currently_scanning = false;
             clearInterval(carousel_message_timer);
+            updateBadgeCount(0, true);
             chrome.runtime.sendMessage({
                 msg: "OverdriveError",
             });
@@ -319,16 +320,27 @@ async function fetchWithTimeout(uri, options = {}, time=60000) {
  * Update extension badge count to display number of books currently available
  *
  * @param {number} count Number of books currently available
+ * @param {boolean} error Should notification color be set to red? Defaults to false.
  */
-function updateBadgeCount(count) {
+function updateBadgeCount(count, error = false) {
     // default badge to blue background
-    chrome.browserAction.setBadgeBackgroundColor({ color: [0, 123, 255, 255] });
+    if (!error) {
+        chrome.browserAction.setBadgeBackgroundColor({ color: [0, 123, 255, 255] });
+    }
+    // else upon error, badge to red background
+    else {
+        chrome.browserAction.setBadgeBackgroundColor({ color: [225, 0, 0, 255] });
+    }
     // update badge to display count
     if (count!=0) {
         chrome.browserAction.setBadgeText({text: count.toString()});
     }
-    // if count equals zero, do not dispay badge
+    // if count equals zero, do not display badge
     else {
         chrome.browserAction.setBadgeText({text: ''});
+    }
+    // display "!" badge upon error
+    if (error) {
+        chrome.browserAction.setBadgeText({text: ' ! '});
     }
 }

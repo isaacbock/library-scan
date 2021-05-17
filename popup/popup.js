@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('audiobook_toggle_settings').addEventListener('click', toggleType);
 });
 
-// Recieve messages from background.js (which fetches new data & coordinates timing) and update DOM accordingly 
+// Receive messages from background.js (which fetches new data & coordinates timing) and update DOM accordingly 
 chrome.runtime.onMessage.addListener(
     function(request, sender, sendResponse) {
         if (request.msg==="In Progress") {

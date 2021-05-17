@@ -3,6 +3,16 @@
  */
 let currently_scanning = false;
 
+/**
+ * @type {number} Refresh wait duration in minutes -- defaults to refreshing every 24 hours
+ */
+ let refreshWait = 24*60;
+
+/**
+ * @type {number} Initialize errorTimeout to prevent data from continually over-refreshing after any errors
+ */
+ let errorTimeout = 0;
+
 // Initialize repeated time-since-refresh check
 getElapsedTimeLoop();
 
@@ -83,8 +93,8 @@ function getElapsedTime() {
             let currentTime = new Date();
             let elapsedTime = Math.floor((currentTime - lastRun) / 60000);
             console.log("Elapsed Time Since Last Refresh: " + elapsedTime + " min");
-            // if more than 24 hrs have passed, data is outdated; trigger refresh
-            if (elapsedTime > 60*24 && !currently_scanning) {
+            // if more than refreshWait minutes have passed, data is outdated; trigger refresh
+            if (elapsedTime > refreshWait && !currently_scanning) {
                 _gaq.push(['_trackEvent', 'Data', 'refreshed', 'automatically']);
                 queryGoodreads(goodreadsID, overdriveURL);
                 elapsedTime = 0;
@@ -172,6 +182,15 @@ function queryGoodreads(goodreadsID, overdriveURL) {
         clearInterval(carousel_message_timer);
         _gaq.push(['_trackEvent', 'Goodreads', 'fetched', 'failed']);
         updateBadgeCount(0, true);
+
+        // Double error timeout upon each repeated error to prevent over-refreshing
+        errorTimeout = errorTimeout>0 ? errorTimeout*2 : 1;
+        // Adjust last run time to incorporate error timeout & save to Chrome local storage
+        let last_run_time = new Date();
+        last_run_time.setMinutes( last_run_time.getMinutes() - refreshWait + errorTimeout );
+        last_run_time = last_run_time.toJSON();
+        chrome.storage.local.set({'LastRun': last_run_time});
+
         chrome.runtime.sendMessage({
             msg: "GoodreadsError",
         });
@@ -263,6 +282,7 @@ async function queryOverdrive(ToRead, overdriveURL) {
                 clearInterval(carousel_message_timer);
                 // end data refesh
                 currently_scanning = false;
+                errorTimeout = 0;
                 _gaq.push(['_trackEvent', 'OverDrive', 'fetched', 'success', BookAvailability.length]);
                 _gaq.push(['_trackEvent', 'OverDrive', 'count', 'available', available_count]);
                 _gaq.push(['_trackEvent', 'OverDrive', 'count', 'hold', unavailable_count]);
@@ -276,6 +296,15 @@ async function queryOverdrive(ToRead, overdriveURL) {
             currently_scanning = false;
             clearInterval(carousel_message_timer);
             updateBadgeCount(0, true);
+
+            // Double error timeout upon each repeated error to prevent over-refreshing
+            errorTimeout = errorTimeout>0 ? errorTimeout*2 : 1;
+            // Adjust last run time to incorporate error timeout & save to Chrome local storage
+            let last_run_time = new Date();
+            last_run_time.setMinutes( last_run_time.getMinutes() - refreshWait + errorTimeout );
+            last_run_time = last_run_time.toJSON();
+            chrome.storage.local.set({'LastRun': last_run_time});
+
             chrome.runtime.sendMessage({
                 msg: "OverdriveError",
             });
@@ -288,7 +317,7 @@ async function queryOverdrive(ToRead, overdriveURL) {
  *
  * @param   {string}    uri             Fetch URL
  * @param   {*}         [options={}]    Fetch options
- * @param   {number}    [time=10000]    Fetch maximum allotted time
+ * @param   {number}    [time=60000]    Fetch maximum allotted time
  * @returns {*}                         Response from data fetch
  */
 async function fetchWithTimeout(uri, options = {}, time=60000) {
@@ -320,7 +349,7 @@ async function fetchWithTimeout(uri, options = {}, time=60000) {
  * Update extension badge count to display number of books currently available
  *
  * @param {number} count Number of books currently available
- * @param {boolean} error Should notification color be set to red? Defaults to false.
+ * @param {boolean} [error=false] Should notification color be set to red? Defaults to false.
  */
 function updateBadgeCount(count, error = false) {
     // default badge to blue background

@@ -14,9 +14,20 @@
         "default_popup": "popup/popup.html"
     },
     "background": {
-        "scripts": ["bootstrap/jquery.min.js","background/api_keys.js","background/xmlToJson.min.js","background/background.js"],
+        "scripts": [
+            "bootstrap/jquery.min.js",
+            "background/api_keys.js",
+            "background/xmlToJson.min.js",
+            "background/background.js"
+        ],
         "persistent": true
     },
+    "content_scripts": [
+        {
+          "matches": ["https://isaacbock.com/library-scan"],
+          "js": ["background/install.js"]
+        }
+    ],
     "permissions": [
         "storage",
         "https://www.goodreads.com/*",

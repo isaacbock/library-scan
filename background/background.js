@@ -37,22 +37,16 @@ let carousel_message_timer;
 // Install & uninstall pages, manifest version tracking
 chrome.runtime.onInstalled.addListener(function (details) {
     if (details.reason === "install") {
-      // Code to be executed on first install
-      chrome.tabs.create({
+        chrome.tabs.create({
         url: "https://isaacbock.com/library-scan#start"
-      });
-      chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
-      _gaq.push(['_trackEvent', 'version', 'installed', chrome.app.getDetails().version]);
+        });
+        chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
+        _gaq.push(['_trackEvent', 'version', 'installed', chrome.app.getDetails().version]);
     } else if (details.reason === "update") {
-      // When extension is updated
-      _gaq.push(['_trackEvent', 'version', 'updated', chrome.app.getDetails().version]);
-      chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
-    } else if (details.reason === "chrome_update") {
-      // When browser is updated
-    } else if (details.reason === "shared_module_update") {
-      // When a shared module is updated
+        _gaq.push(['_trackEvent', 'version', 'updated', chrome.app.getDetails().version]);
+        chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
     }
-  });
+});
 
 // Receive messages from popup.js (front-end) and respond with data
 chrome.runtime.onMessage.addListener(

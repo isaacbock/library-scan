@@ -70,6 +70,7 @@ chrome.runtime.onMessage.addListener(
         // Get time since last refresh
         else if (request.msg === "elapsedTime") {
             getElapsedTime();
+
         }
         // Update available book badge count as specified
         else if (request.msg === "badgeCount") {
@@ -97,11 +98,13 @@ function getElapsedTimeLoop() {
  */
 function getElapsedTime() {
     // retrieve data from Chrome local storage
-    chrome.storage.local.get(['LastRun', 'goodreadsID', 'overdriveURL'], async function(result) {
+    chrome.storage.local.get(['LastRun', 'goodreadsID', 'overdriveURL', 'error', 'count'], async function(result) {
         let lastRunTime = await result.LastRun;
         let goodreadsID = await result.goodreadsID;
         let overdriveURL = await result.overdriveURL;
-        if (lastRunTime!=undefined) {
+        let error = await result.error;
+        let count = await result.count;
+        if (typeof lastRunTime!=='undefined' && typeof goodreadsID!=='undefined' && typeof overdriveURL!=='undefined') {
             // calculate time (in minutes) since last refresh
             let lastRun = new Date(lastRunTime);
             let currentTime = new Date();
@@ -133,6 +136,15 @@ function getElapsedTime() {
                     msg: "ElapsedTime", 
                     time: Math.floor(elapsedTime/60) + " hr ago"
                 });
+            }
+            // auto add badge count (in case of extension update or reset, which eliminates badge)
+            if (typeof error!=='undefined' && typeof count!=='undefined') {
+                if (error=="None") {
+                    updateBadgeCount(count);
+                }
+                else {
+                    updateBadgeCount(0, true);
+                }
             }
         }
     });
@@ -197,6 +209,9 @@ function queryGoodreads(goodreadsID, overdriveURL) {
         _gaq.push(['_trackEvent', 'Goodreads', 'fetched', 'failed']);
         updateBadgeCount(0, true);
 
+        // save error state
+        chrome.storage.local.set({'error': "Goodreads", 'count': 0});
+
         // Double error timeout upon each repeated error to prevent over-refreshing
         errorTimeout = errorTimeout>0 ? errorTimeout*2 : 1;
         // Adjust last run time to incorporate error timeout & save to Chrome local storage
@@ -223,6 +238,9 @@ async function queryOverdrive(ToRead, overdriveURL) {
     currently_scanning = true;
     let available_count = 0;
     let unavailable_count = 0;
+    // set badge to searching icon
+    chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
+    chrome.browserAction.setBadgeText({text: '⟳'});
     console.log("Scanning OverDrive for titles:");
     // as books are identified on OverDrive, add to BookAvailability array
     let BookAvailability = [];
@@ -276,11 +294,12 @@ async function queryOverdrive(ToRead, overdriveURL) {
             // if current book was the final title to fetch (OverDrive fetch completed)
             if (i===ToRead.length-1) {
                 // save BookAvailability data to Chrome local storage
-                chrome.storage.local.set({'BookAvailability': BookAvailability});
+                chrome.storage.local.set({'BookAvailability': BookAvailability, 'count': available_count});
                 // save current time (used to calculate time elapsed since last refresh) & save to Chrome local storage
                 let last_run_time = (new Date()).toJSON();
                 chrome.storage.local.set({'LastRun': last_run_time});
                 // notify popup.js (front-end) of completed data refresh
+                chrome.storage.local.set({'error': "None"});
                 chrome.runtime.sendMessage({
                     msg: "Complete",
                     BookAvailability: BookAvailability
@@ -300,7 +319,30 @@ async function queryOverdrive(ToRead, overdriveURL) {
                 _gaq.push(['_trackEvent', 'OverDrive', 'fetched', 'success', BookAvailability.length]);
                 _gaq.push(['_trackEvent', 'OverDrive', 'count', 'available', available_count]);
                 _gaq.push(['_trackEvent', 'OverDrive', 'count', 'hold', unavailable_count]);
+
+                // filter eBook and audiobook preferences for accurate badge count
                 updateBadgeCount(available_count);
+                chrome.storage.local.get(['ebook_toggle', 'audiobook_toggle'], async function(result) {
+                    let ebookToggle = await result.ebook_toggle;
+                    let audiobookToggle = await result.audiobook_toggle;
+                    if (typeof ebookToggle!=='undefined' && typeof audiobookToggle!=='undefined') {
+                        let Available = [];
+                        for (let i=0; i<BookAvailability.length; i++) {
+                            if (BookAvailability[i].type==="eBook" && ebookToggle){
+                                if (BookAvailability[i].available===true){
+                                    Available.push(BookAvailability[i]);
+                                }
+                            }
+                            else if (BookAvailability[i].type==="Audiobook" && audiobookToggle){
+                                if (BookAvailability[i].available===true){
+                                    Available.push(BookAvailability[i]);
+                                }
+                            }
+                        }
+                        updateBadgeCount(Available.length);
+                        chrome.storage.local.set({'count': Available.length});
+                    }
+                });
                 console.log("OverDrive scan complete.");
             }
         })
@@ -310,6 +352,9 @@ async function queryOverdrive(ToRead, overdriveURL) {
             currently_scanning = false;
             clearInterval(carousel_message_timer);
             updateBadgeCount(0, true);
+
+            // save error state
+            chrome.storage.local.set({'error': "OverDrive", 'count': 0});
 
             // Double error timeout upon each repeated error to prevent over-refreshing
             errorTimeout = errorTimeout>0 ? errorTimeout*2 : 1;

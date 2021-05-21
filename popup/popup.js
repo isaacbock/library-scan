@@ -8,6 +8,14 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('audiobook_toggle_settings').addEventListener('click', toggleType);
 });
 
+// Autosave user input
+$('#goodreadsID').on('change', function() {
+    chrome.storage.local.set({'goodreadsID': $('#goodreadsID').val()});
+});
+$('#overdriveURL').on('change', function() {
+    chrome.storage.local.set({'overdriveURL': $('#overdriveURL').val()});
+});
+
 // Receive messages from background.js (which fetches new data & coordinates timing) and update DOM accordingly 
 chrome.runtime.onMessage.addListener(
     function(request, sender, sendResponse) {
@@ -80,6 +88,7 @@ var _AnalyticsCode = 'UA-172825265-2';
 var _gaq = _gaq || [];
 _gaq.push(['_setAccount', _AnalyticsCode]);
 _gaq.push(['_trackPageview']);
+
 /**
  * Google Analytics: send data to Google
  */
@@ -91,6 +100,7 @@ _gaq.push(['_trackPageview']);
   var s = document.getElementsByTagName('script')[0];
   s.parentNode.insertBefore(ga, s);
 })();
+
 /**
  * Google Analytics: track data refreshes initiated by user
  */
@@ -98,12 +108,14 @@ function logReload() {
     _gaq.push(['_trackEvent', 'Data', 'refreshed', 'manually']);
     reloadData();
 }
+
 /**
  * Google Analytics: track book checkout on OverDrive
  */
 function logCheckout() {
     _gaq.push(['_trackEvent', 'Book', 'checkout']);
 }
+
 /**
  * Google Analytics: track book hold on OverDrive
  */
@@ -120,43 +132,56 @@ loadUserData();
  */
 function loadUserData() {
     // Retrieve user data from Chrome local storage
-    chrome.storage.local.get(['goodreadsID', 'overdriveURL', "BookAvailability", "ebook_toggle", "audiobook_toggle"], async function(result) {
+    chrome.storage.local.get(['goodreadsID', 'overdriveURL', "BookAvailability", "ebook_toggle", "audiobook_toggle", "error"], async function(result) {
         let goodreadsID = await result.goodreadsID;
         let overdriveURL = await result.overdriveURL;
         let BookAvailability = await result.BookAvailability;
         let ebookToggle = await result.ebook_toggle;
         let audiobookToggle = await result.audiobook_toggle;
+        let error = await result.error;
+        console.log(goodreadsID, overdriveURL, BookAvailability, ebookToggle, audiobookToggle, error);
         // if user is logged in (data retrieved successfully), grant full access
-        if (typeof goodreadsID!=='undefined' && typeof overdriveURL!=='undefined' && typeof ebookToggle!=='undefined' && typeof audiobookToggle!=='undefined') {
+        if (typeof goodreadsID!=='undefined' && typeof overdriveURL!=='undefined' && typeof ebookToggle!=='undefined' && typeof audiobookToggle!=='undefined' && typeof error!=='undefined') {
             // display current user data in Settings
             document.getElementById("goodreadsID").value = goodreadsID;
             document.getElementById("overdriveURL").value = overdriveURL;
-            // default to Library view and show bottom nav bar
-            $('#pills-home').addClass("show active");
-            $('#pills-profile').removeClass("show active");
-            $('#pills-home-tab').addClass("active");
-            $('#pills-profile-tab').removeClass("active");
-            $('#pills-home-tab').attr('aria-selected', true);
-            $('#pills-profile-tab').attr('aria-selected', false);
-            $('#pills-tab').removeClass("d-none");
-            // display updated user toggle (eBook vs. Audiobook) preferences
-            document.getElementById('ebook_toggle').checked = ebookToggle;
-            document.getElementById('ebook_toggle_settings').checked = ebookToggle;
-            document.getElementById('audiobook_toggle').checked = audiobookToggle;
-            document.getElementById('audiobook_toggle_settings').checked = audiobookToggle;
-            // hide all Library views until book data is loaded
-            $('#home_normal').addClass("d-none");
-            $('#home_loading').addClass("d-none");
-            // if previous user, display old data & time since last update
-            if (typeof BookAvailability!=='undefined') {
-                    updateMainPage(BookAvailability);
-                    chrome.runtime.sendMessage({
-                        msg: "elapsedTime"
-                    });
+            // check for previous Goodreads error
+            if (error=="Goodreads") {
+                goodreadsError();
             }
-            // else, for users without previous data, load new book data
+            // check for previous OverDrive error
+            else if (error=="OverDrive") {
+                overdriveError();
+            }
+            // else no errors, proceed to show library
             else {
-                reloadData(goodreadsID, overdriveURL);
+                // default to Library view and show bottom nav bar
+                $('#pills-home').addClass("show active");
+                $('#pills-profile').removeClass("show active");
+                $('#pills-home-tab').addClass("active");
+                $('#pills-profile-tab').removeClass("active");
+                $('#pills-home-tab').attr('aria-selected', true);
+                $('#pills-profile-tab').attr('aria-selected', false);
+                $('#pills-tab').removeClass("d-none");
+                // display updated user toggle (eBook vs. Audiobook) preferences
+                document.getElementById('ebook_toggle').checked = ebookToggle;
+                document.getElementById('ebook_toggle_settings').checked = ebookToggle;
+                document.getElementById('audiobook_toggle').checked = audiobookToggle;
+                document.getElementById('audiobook_toggle_settings').checked = audiobookToggle;
+                // hide all Library views until book data is loaded
+                $('#home_normal').addClass("d-none");
+                $('#home_loading').addClass("d-none");
+                // if previous user, display old data & time since last update
+                if (typeof BookAvailability!=='undefined') {
+                        updateMainPage(BookAvailability);
+                        chrome.runtime.sendMessage({
+                            msg: "elapsedTime"
+                        });
+                }
+                // else, for users without previous data, load new book data
+                else {
+                    reloadData(goodreadsID, overdriveURL);
+                }
             }
         }
         // else, user is not logged in
@@ -227,17 +252,17 @@ function updateMainPage(BookAvailability) {
     else {
         // add each Available book to Library view
         for (let i=0; i<Available.length; i++) {
-            document.getElementById("available_now").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Available[i].cover+"' class='cover' alt='"+Available[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Available[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Available[i].author+"</p><p class='text-nowrap text-truncate mb-3'><em>"+Available[i].type+"</em></p><a type='button' class='btn btn-primary available' href='"+Available[i].URL+"' target='_blank'>Checkout</a></div></div>";
+            document.getElementById("available_now").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Available[i].cover+"' class='cover' alt='"+Available[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Available[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Available[i].author+"</p><p class='text-nowrap text-truncate mb-3'><span class='mr-1'>"+(Available[i].type=='eBook'?'📘':'🎧')+"</span><em>"+Available[i].type+"</em></p><a type='button' class='btn btn-primary available' href='"+Available[i].URL+"' target='_blank'>Checkout</a></div></div>";
         }
         // if books are available, prompt user to leave a review
         if (Available.length > 0) {
-            document.getElementById("available_now").innerHTML += "<div class='d-flex align-items-center border-bottom pt-2 pb-3 mb-2'><h5 class='p-2 m-0'>Find a good book?</h5><a type='button' class='btn btn-success' href='https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik/review' target='_blank'>Leave a review!</a></div>";
+            document.getElementById("available_now").innerHTML += "<div class='d-flex align-items-center border-bottom pt-4 pb-3 pb-4'><h5 class='p-2 m-0'>Find a good book?</h5><a type='button' class='btn btn-success' href='https://chrome.google.com/webstore/detail/mfckggnkebdpaocogfekaaicafooeiik/review' target='_blank'>Leave a review!</a></div>";
         }
         // sort Hold books by increasing expected waits (in days)
         Holds.sort((a, b) => (a.estimatedWait == undefined) ? 1 : (a.estimatedWait > b.estimatedWait) ? 1 : -1);
         // add each Hold book to Library view (underneath Available books)
         for (let i=0; i<Holds.length; i++) {
-            document.getElementById("available_soon").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Holds[i].cover+"' class='cover' alt='"+Holds[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Holds[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Holds[i].author+"</p><p class='text-nowrap text-truncate mb-3'><em>"+Holds[i].type+"<br>~"+((Holds[i].estimatedWait != undefined) ? ((Holds[i].estimatedWait >=14) ? Math.round(Holds[i].estimatedWait/7)+' week wait' : Holds[i].estimatedWait+' day wait') : 'Unknown wait')+"</em></p><a type='button' class='btn btn-outline-secondary hold' href='"+Holds[i].URL+"' target='_blank'>Place Hold</a></div></div>";
+            document.getElementById("available_soon").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Holds[i].cover+"' class='cover' alt='"+Holds[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Holds[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Holds[i].author+"</p><p class='text-nowrap text-truncate mb-3'><span class='mr-1'>"+(Available[i].type=='eBook'?'📘':'🎧')+"</span><em>"+Available[i].type+"</em><br>~"+((Holds[i].estimatedWait != undefined) ? ((Holds[i].estimatedWait >=14) ? Math.round(Holds[i].estimatedWait/7)+' week wait' : Holds[i].estimatedWait+' day wait') : 'Unknown wait')+"</em></p><a type='button' class='btn btn-outline-secondary hold' href='"+Holds[i].URL+"' target='_blank'>Place Hold</a></div></div>";
         }
         // Google Analytics: track book checkouts and holds
         $('a.available').click(logCheckout);
@@ -250,6 +275,7 @@ function updateMainPage(BookAvailability) {
     // update badge count of available books
     $('#available_count').removeClass("d-none");
     document.getElementById("available_count").innerText = Available.length.toString();
+    chrome.storage.local.set({'count': Available.length.toString()});
     chrome.runtime.sendMessage({
         msg: "badgeCount", 
         count: Available.length
@@ -304,6 +330,7 @@ function reloadData(goodreadsID, overdriveURL) {
 function saveUserData(e) {
     // prevent extension from refreshing all views
     e.preventDefault();
+    console.log("test");
     // collect user data from Settings form
     let goodreadsID = document.getElementById("goodreadsID").value;
     let overdriveURL = document.getElementById("overdriveURL").value;
@@ -366,7 +393,7 @@ function toggleType(e) {
  */
 function goodreadsError() {
     // clear problematic Goodreads user ID and current books
-    chrome.storage.local.remove(["goodreadsID","BookAvailability"]);
+    chrome.storage.local.remove(["BookAvailability"]);
     // show Goodreads error message (and hide OverDrive error message)
     $('#goodreads_fail').removeClass("d-none");
     $('#overdrive_fail').addClass("d-none");
@@ -389,7 +416,7 @@ function goodreadsError() {
  */
 function overdriveError() {
     // clear problematic OverDrive URL and current books
-    chrome.storage.local.remove(["overdriveURL","BookAvailability"]);
+    chrome.storage.local.remove(["BookAvailability"]);
     // show OverDrive error message (and hide Goodreads error message)
     $('#goodreads_fail').addClass("d-none");
     $('#overdrive_fail').removeClass("d-none");

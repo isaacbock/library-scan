@@ -41,9 +41,9 @@ chrome.runtime.onInstalled.addListener(function (details) {
         url: "https://isaacbock.com/library-scan#start"
         });
         chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
-        _gaq.push(['_trackEvent', 'version', 'installed', chrome.app.getDetails().version]);
+        _gaq.push(['_trackEvent', 'Version', 'installed', chrome.app.getDetails().version]);
     } else if (details.reason === "update") {
-        _gaq.push(['_trackEvent', 'version', 'updated', chrome.app.getDetails().version]);
+        _gaq.push(['_trackEvent', 'Version', 'updated', chrome.app.getDetails().version]);
         chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
     }
 });
@@ -158,7 +158,9 @@ function getElapsedTime() {
  */
 function queryGoodreads(goodreadsID, overdriveURL) {
     currently_scanning = true;
-    updateBadgeCount(0)
+    // set badge to searching icon
+    chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
+    chrome.browserAction.setBadgeText({text: '⟳'});
     // fetch data using Goodreads API
     fetch('https://www.goodreads.com/review/list?v=2&id='+goodreadsID+'&shelf=to-read&sort=position&order=d&per_page=200&key='+apiKeys.goodreads, {
         method: "GET",
@@ -339,6 +341,8 @@ async function queryOverdrive(ToRead, overdriveURL) {
                                 }
                             }
                         }
+                        _gaq.push(['_trackEvent', 'Settings', 'media toggle', 'eBooks', ebookToggle?1:0]);
+                        _gaq.push(['_trackEvent', 'Settings', 'media toggle', 'audiobooks', audiobookToggle?1:0]);
                         updateBadgeCount(Available.length);
                         chrome.storage.local.set({'count': Available.length});
                     }

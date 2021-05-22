@@ -87,9 +87,14 @@ input:checked + .slider:before {
     border-radius: 50%;
 }
 
+/* Error messages & help */
 #goodreads_fail, #overdrive_fail {
     display: flex;
     flex-direction: column;
+}
+#goodreads_fail > hr, #overdrive_fail > hr {
+    width: 100%;
+    margin-top: 8px !important;
 }
 .help {
     background-color: darkgray;
@@ -110,9 +115,14 @@ input:checked + .slider:before {
 .helpLink {
     color: gray;
     font-weight: bold;
+    text-decoration: underline;
+    transition: 250ms;
 }
 .helpLink.red {
     color: #721c24;
-    font-weight: bold;
-    /* margin-left: auto; */
+    margin-left: auto;
+    font-weight: normal;
+}
+.helpLink.red:hover {
+    color: #411014;
 }

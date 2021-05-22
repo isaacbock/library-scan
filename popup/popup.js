@@ -139,7 +139,6 @@ function loadUserData() {
         let ebookToggle = await result.ebook_toggle;
         let audiobookToggle = await result.audiobook_toggle;
         let error = await result.error;
-        console.log(goodreadsID, overdriveURL, BookAvailability, ebookToggle, audiobookToggle, error);
         // if user is logged in (data retrieved successfully), grant full access
         if (typeof goodreadsID!=='undefined' && typeof overdriveURL!=='undefined' && typeof ebookToggle!=='undefined' && typeof audiobookToggle!=='undefined' && typeof error!=='undefined') {
             // display current user data in Settings
@@ -262,7 +261,7 @@ function updateMainPage(BookAvailability) {
         Holds.sort((a, b) => (a.estimatedWait == undefined) ? 1 : (a.estimatedWait > b.estimatedWait) ? 1 : -1);
         // add each Hold book to Library view (underneath Available books)
         for (let i=0; i<Holds.length; i++) {
-            document.getElementById("available_soon").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Holds[i].cover+"' class='cover' alt='"+Holds[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Holds[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Holds[i].author+"</p><p class='text-nowrap text-truncate mb-3'><span class='mr-1'>"+(Available[i].type=='eBook'?'📘':'🎧')+"</span><em>"+Available[i].type+"</em><br>~"+((Holds[i].estimatedWait != undefined) ? ((Holds[i].estimatedWait >=14) ? Math.round(Holds[i].estimatedWait/7)+' week wait' : Holds[i].estimatedWait+' day wait') : 'Unknown wait')+"</em></p><a type='button' class='btn btn-outline-secondary hold' href='"+Holds[i].URL+"' target='_blank'>Place Hold</a></div></div>";
+            document.getElementById("available_soon").innerHTML += "<div class='d-flex border-bottom pb-2 mb-2'><img src='"+Holds[i].cover+"' class='cover' alt='"+Holds[i].title+"'><div class='d-flex flex-column justify-content-center overflow-hidden w-75 ml-3 mr-3'><h6 class='text-nowrap text-truncate mb-0'>"+Holds[i].title+"</h6><p class='text-nowrap text-truncate mb-0'>"+Holds[i].author+"</p><p class='text-nowrap text-truncate mb-3'><span class='mr-1'>"+(Holds[i].type=='eBook'?'📘':'🎧')+"</span><em>"+Holds[i].type+"</em><br>~"+((Holds[i].estimatedWait != undefined) ? ((Holds[i].estimatedWait >=14) ? Math.round(Holds[i].estimatedWait/7)+' week wait' : Holds[i].estimatedWait+' day wait') : 'Unknown wait')+"</em></p><a type='button' class='btn btn-outline-secondary hold' href='"+Holds[i].URL+"' target='_blank'>Place Hold</a></div></div>";
         }
         // Google Analytics: track book checkouts and holds
         $('a.available').click(logCheckout);
@@ -330,7 +329,6 @@ function reloadData(goodreadsID, overdriveURL) {
 function saveUserData(e) {
     // prevent extension from refreshing all views
     e.preventDefault();
-    console.log("test");
     // collect user data from Settings form
     let goodreadsID = document.getElementById("goodreadsID").value;
     let overdriveURL = document.getElementById("overdriveURL").value;

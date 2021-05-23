@@ -3,7 +3,7 @@
     "name": "Library Scan: OverDrive + Goodreads",
     "short_name": "Library Scan",
     "description": "Scan any OverDrive library for available eBooks & audiobooks from your Goodreads to-read shelf.",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "author": "Isaac B.",
     "icons": {
         "16": "icons/icon16.png",
@@ -14,9 +14,20 @@
         "default_popup": "popup/popup.html"
     },
     "background": {
-        "scripts": ["bootstrap/jquery.min.js","background/api_keys.js","background/xmlToJson.min.js","background/background.js"],
+        "scripts": [
+            "bootstrap/jquery.min.js",
+            "background/api_keys.js",
+            "background/xmlToJson.min.js",
+            "background/background.js"
+        ],
         "persistent": true
     },
+    "content_scripts": [
+        {
+          "matches": ["https://isaacbock.com/library-scan"],
+          "js": ["background/install.js"]
+        }
+    ],
     "permissions": [
         "storage",
         "https://www.goodreads.com/*",

@@ -86,3 +86,43 @@ input:checked + .slider:before {
 .slider.round:before {
     border-radius: 50%;
 }
+
+/* Error messages & help */
+#goodreads_fail, #overdrive_fail {
+    display: flex;
+    flex-direction: column;
+}
+#goodreads_fail > hr, #overdrive_fail > hr {
+    width: 100%;
+    margin-top: 8px !important;
+}
+.help {
+    background-color: darkgray;
+    border-radius: 50%;
+    color: white;
+    transition: 500ms;
+    width: 18px;
+    height: 18px;
+    display: inline-block;
+    text-align: center;
+    line-height: 18px;
+}
+.help:hover {
+    background-color: rgb(92, 92, 92);
+    color: white;
+    text-decoration: none;
+}
+.helpLink {
+    color: gray;
+    font-weight: bold;
+    text-decoration: underline;
+    transition: 250ms;
+}
+.helpLink.red {
+    color: #721c24;
+    margin-left: auto;
+    font-weight: normal;
+}
+.helpLink.red:hover {
+    color: #411014;
+}

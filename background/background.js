@@ -3,6 +3,16 @@
  */
 let currently_scanning = false;
 
+/**
+ * @type {number} Refresh wait duration in minutes -- defaults to refreshing every 24 hours
+ */
+ let refreshWait = 24*60;
+
+/**
+ * @type {number} Initialize errorTimeout to prevent data from continually over-refreshing after any errors
+ */
+ let errorTimeout = 0;
+
 // Initialize repeated time-since-refresh check
 getElapsedTimeLoop();
 
@@ -24,15 +34,27 @@ _gaq.push(['_setAccount', _AnalyticsCode]);
  */
 let carousel_message_timer;
 
-// Recieve messages from popup.js (front-end) and respond with data
+// Install & uninstall pages, manifest version tracking
+chrome.runtime.onInstalled.addListener(function (details) {
+    if (details.reason === "install") {
+        chrome.tabs.create({
+        url: "https://isaacbock.com/library-scan#start"
+        });
+        chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
+        _gaq.push(['_trackEvent', 'Version', 'installed', chrome.app.getDetails().version]);
+    } else if (details.reason === "update") {
+        _gaq.push(['_trackEvent', 'Version', 'updated', chrome.app.getDetails().version]);
+        chrome.runtime.setUninstallURL('https://isaacbock.com/library-scan-uninstall');
+    }
+});
+
+// Receive messages from popup.js (front-end) and respond with data
 chrome.runtime.onMessage.addListener(
     function(request, sender, sendResponse) {
         // Request to refresh book data
         if (request.msg === "goodreads" && !currently_scanning) {
             // Begin by refreshing all titles from Goodreads (which will then progress to identifying these title on OverDrive)
             queryGoodreads(request.goodreadsID, request.overdriveURL);
-            // Reset available book badge count to zero
-            updateBadgeCount(0);
             // Update Loading view carousel messages every 10 seconds
             let carousel_messages=["We'll scan the most recent 200 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.","We'll automatically refresh your library every 24 hours so titles are always up-to-date.","Toggle between eBooks and Audiobooks to find exactly what you're looking for."];
             let carousel_position=1;
@@ -48,6 +70,7 @@ chrome.runtime.onMessage.addListener(
         // Get time since last refresh
         else if (request.msg === "elapsedTime") {
             getElapsedTime();
+
         }
         // Update available book badge count as specified
         else if (request.msg === "badgeCount") {
@@ -75,18 +98,20 @@ function getElapsedTimeLoop() {
  */
 function getElapsedTime() {
     // retrieve data from Chrome local storage
-    chrome.storage.local.get(['LastRun', 'goodreadsID', 'overdriveURL'], async function(result) {
+    chrome.storage.local.get(['LastRun', 'goodreadsID', 'overdriveURL', 'error', 'count'], async function(result) {
         let lastRunTime = await result.LastRun;
         let goodreadsID = await result.goodreadsID;
         let overdriveURL = await result.overdriveURL;
-        if (lastRunTime!=undefined) {
+        let error = await result.error;
+        let count = await result.count;
+        if (typeof lastRunTime!=='undefined' && typeof goodreadsID!=='undefined' && typeof overdriveURL!=='undefined') {
             // calculate time (in minutes) since last refresh
             let lastRun = new Date(lastRunTime);
             let currentTime = new Date();
             let elapsedTime = Math.floor((currentTime - lastRun) / 60000);
             console.log("Elapsed Time Since Last Refresh: " + elapsedTime + " min");
-            // if more than 24 hrs have passed, data is outdated; trigger refresh
-            if (elapsedTime > 60*24 && !currently_scanning) {
+            // if more than refreshWait minutes have passed, data is outdated; trigger refresh
+            if (elapsedTime > refreshWait && !currently_scanning) {
                 _gaq.push(['_trackEvent', 'Data', 'refreshed', 'automatically']);
                 queryGoodreads(goodreadsID, overdriveURL);
                 elapsedTime = 0;
@@ -112,6 +137,15 @@ function getElapsedTime() {
                     time: Math.floor(elapsedTime/60) + " hr ago"
                 });
             }
+            // auto add badge count (in case of extension update or reset, which eliminates badge)
+            if (typeof error!=='undefined' && typeof count!=='undefined') {
+                if (error=="None") {
+                    updateBadgeCount(count);
+                }
+                else {
+                    updateBadgeCount(0, true);
+                }
+            }
         }
     });
 }
@@ -124,6 +158,9 @@ function getElapsedTime() {
  */
 function queryGoodreads(goodreadsID, overdriveURL) {
     currently_scanning = true;
+    // set badge to searching icon
+    chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
+    chrome.browserAction.setBadgeText({text: '⟳'});
     // fetch data using Goodreads API
     fetch('https://www.goodreads.com/review/list?v=2&id='+goodreadsID+'&shelf=to-read&sort=position&order=d&per_page=200&key='+apiKeys.goodreads, {
         method: "GET",
@@ -172,6 +209,19 @@ function queryGoodreads(goodreadsID, overdriveURL) {
         currently_scanning = false;
         clearInterval(carousel_message_timer);
         _gaq.push(['_trackEvent', 'Goodreads', 'fetched', 'failed']);
+        updateBadgeCount(0, true);
+
+        // save error state
+        chrome.storage.local.set({'error': "Goodreads", 'count': 0});
+
+        // Double error timeout upon each repeated error to prevent over-refreshing
+        errorTimeout = errorTimeout>0 ? errorTimeout*2 : 1;
+        // Adjust last run time to incorporate error timeout & save to Chrome local storage
+        let last_run_time = new Date();
+        last_run_time.setMinutes( last_run_time.getMinutes() - refreshWait + errorTimeout );
+        last_run_time = last_run_time.toJSON();
+        chrome.storage.local.set({'LastRun': last_run_time});
+
         chrome.runtime.sendMessage({
             msg: "GoodreadsError",
         });
@@ -190,6 +240,9 @@ async function queryOverdrive(ToRead, overdriveURL) {
     currently_scanning = true;
     let available_count = 0;
     let unavailable_count = 0;
+    // set badge to searching icon
+    chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
+    chrome.browserAction.setBadgeText({text: '⟳'});
     console.log("Scanning OverDrive for titles:");
     // as books are identified on OverDrive, add to BookAvailability array
     let BookAvailability = [];
@@ -243,11 +296,12 @@ async function queryOverdrive(ToRead, overdriveURL) {
             // if current book was the final title to fetch (OverDrive fetch completed)
             if (i===ToRead.length-1) {
                 // save BookAvailability data to Chrome local storage
-                chrome.storage.local.set({'BookAvailability': BookAvailability});
+                chrome.storage.local.set({'BookAvailability': BookAvailability, 'count': available_count});
                 // save current time (used to calculate time elapsed since last refresh) & save to Chrome local storage
                 let last_run_time = (new Date()).toJSON();
                 chrome.storage.local.set({'LastRun': last_run_time});
                 // notify popup.js (front-end) of completed data refresh
+                chrome.storage.local.set({'error': "None"});
                 chrome.runtime.sendMessage({
                     msg: "Complete",
                     BookAvailability: BookAvailability
@@ -263,10 +317,36 @@ async function queryOverdrive(ToRead, overdriveURL) {
                 clearInterval(carousel_message_timer);
                 // end data refesh
                 currently_scanning = false;
+                errorTimeout = 0;
                 _gaq.push(['_trackEvent', 'OverDrive', 'fetched', 'success', BookAvailability.length]);
                 _gaq.push(['_trackEvent', 'OverDrive', 'count', 'available', available_count]);
                 _gaq.push(['_trackEvent', 'OverDrive', 'count', 'hold', unavailable_count]);
+
+                // filter eBook and audiobook preferences for accurate badge count
                 updateBadgeCount(available_count);
+                chrome.storage.local.get(['ebook_toggle', 'audiobook_toggle'], async function(result) {
+                    let ebookToggle = await result.ebook_toggle;
+                    let audiobookToggle = await result.audiobook_toggle;
+                    if (typeof ebookToggle!=='undefined' && typeof audiobookToggle!=='undefined') {
+                        let Available = [];
+                        for (let i=0; i<BookAvailability.length; i++) {
+                            if (BookAvailability[i].type==="eBook" && ebookToggle){
+                                if (BookAvailability[i].available===true){
+                                    Available.push(BookAvailability[i]);
+                                }
+                            }
+                            else if (BookAvailability[i].type==="Audiobook" && audiobookToggle){
+                                if (BookAvailability[i].available===true){
+                                    Available.push(BookAvailability[i]);
+                                }
+                            }
+                        }
+                        _gaq.push(['_trackEvent', 'Settings', 'media toggle', 'eBooks', ebookToggle?1:0]);
+                        _gaq.push(['_trackEvent', 'Settings', 'media toggle', 'audiobooks', audiobookToggle?1:0]);
+                        updateBadgeCount(Available.length);
+                        chrome.storage.local.set({'count': Available.length});
+                    }
+                });
                 console.log("OverDrive scan complete.");
             }
         })
@@ -275,6 +355,19 @@ async function queryOverdrive(ToRead, overdriveURL) {
             console.log('OverDrive fetch Error ', err);
             currently_scanning = false;
             clearInterval(carousel_message_timer);
+            updateBadgeCount(0, true);
+
+            // save error state
+            chrome.storage.local.set({'error': "OverDrive", 'count': 0});
+
+            // Double error timeout upon each repeated error to prevent over-refreshing
+            errorTimeout = errorTimeout>0 ? errorTimeout*2 : 1;
+            // Adjust last run time to incorporate error timeout & save to Chrome local storage
+            let last_run_time = new Date();
+            last_run_time.setMinutes( last_run_time.getMinutes() - refreshWait + errorTimeout );
+            last_run_time = last_run_time.toJSON();
+            chrome.storage.local.set({'LastRun': last_run_time});
+
             chrome.runtime.sendMessage({
                 msg: "OverdriveError",
             });
@@ -287,7 +380,7 @@ async function queryOverdrive(ToRead, overdriveURL) {
  *
  * @param   {string}    uri             Fetch URL
  * @param   {*}         [options={}]    Fetch options
- * @param   {number}    [time=10000]    Fetch maximum allotted time
+ * @param   {number}    [time=60000]    Fetch maximum allotted time
  * @returns {*}                         Response from data fetch
  */
 async function fetchWithTimeout(uri, options = {}, time=60000) {
@@ -319,16 +412,27 @@ async function fetchWithTimeout(uri, options = {}, time=60000) {
  * Update extension badge count to display number of books currently available
  *
  * @param {number} count Number of books currently available
+ * @param {boolean} [error=false] Should notification color be set to red? Defaults to false.
  */
-function updateBadgeCount(count) {
+function updateBadgeCount(count, error = false) {
     // default badge to blue background
-    chrome.browserAction.setBadgeBackgroundColor({ color: [0, 123, 255, 255] });
+    if (!error) {
+        chrome.browserAction.setBadgeBackgroundColor({ color: [0, 123, 255, 255] });
+    }
+    // else upon error, badge to red background
+    else {
+        chrome.browserAction.setBadgeBackgroundColor({ color: [225, 0, 0, 255] });
+    }
     // update badge to display count
     if (count!=0) {
         chrome.browserAction.setBadgeText({text: count.toString()});
     }
-    // if count equals zero, do not dispay badge
+    // if count equals zero, do not display badge
     else {
         chrome.browserAction.setBadgeText({text: ''});
+    }
+    // display "!" badge upon error
+    if (error) {
+        chrome.browserAction.setBadgeText({text: ' ! '});
     }
 }

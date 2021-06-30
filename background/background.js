@@ -55,17 +55,6 @@ chrome.runtime.onMessage.addListener(
         if (request.msg === "goodreads" && !currently_scanning) {
             // Begin by refreshing all titles from Goodreads (which will then progress to identifying these title on OverDrive)
             queryGoodreads(request.goodreadsID, request.overdriveURL);
-            // Update Loading view carousel messages every 10 seconds
-            let carousel_messages=["We'll scan the most recent 200 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.","We'll automatically refresh your library every 24 hours so titles are always up-to-date.","Toggle between eBooks and Audiobooks to find exactly what you're looking for."];
-            let carousel_position=1;
-            carousel_message_timer = setInterval(function(){ 
-                chrome.runtime.sendMessage({
-                    msg: "CarouselMsg",
-                    text: carousel_messages[carousel_position%carousel_messages.length]
-                    });
-                carousel_position++;
-                console.log("Carousel message.");
-            }, 10000);
         }
         // Get time since last refresh
         else if (request.msg === "elapsedTime") {
@@ -74,7 +63,7 @@ chrome.runtime.onMessage.addListener(
         }
         // Update available book badge count as specified
         else if (request.msg === "badgeCount") {
-            updateBadgeCount(request.count);
+            if (!currently_scanning) updateBadgeCount(request.count);
         }
         // Confirm message received
         return true;
@@ -157,7 +146,22 @@ function getElapsedTime() {
  * @param {string} overdriveURL  URL of user's local OverDrive library (ex: https://nypl.overdrive.com)
  */
 function queryGoodreads(goodreadsID, overdriveURL) {
+    if (!navigator.onLine) {
+        console.log("No internet connection.")
+        return;
+    }
     currently_scanning = true;
+    // Update Loading view carousel messages every 10 seconds
+    let carousel_messages=["We'll scan the most recent 200 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.","We'll automatically refresh your library every 24 hours so titles are always up-to-date.","Toggle between eBooks and audiobooks to find exactly what you're looking for."];
+    let carousel_position=1;
+    carousel_message_timer = setInterval(function(){ 
+        chrome.runtime.sendMessage({
+            msg: "CarouselMsg",
+            text: carousel_messages[carousel_position%carousel_messages.length]
+            });
+        carousel_position++;
+        console.log("Carousel message.");
+    }, 10000);
     // set badge to searching icon
     chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
     chrome.browserAction.setBadgeText({text: '⟳'});
@@ -293,6 +297,8 @@ async function queryOverdrive(ToRead, overdriveURL) {
                 count: i+1,
                 total: ToRead.length
             });
+            chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
+            chrome.browserAction.setBadgeText({text: '⟳'});
             // if current book was the final title to fetch (OverDrive fetch completed)
             if (i===ToRead.length-1) {
                 // save BookAvailability data to Chrome local storage

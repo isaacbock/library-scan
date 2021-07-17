@@ -146,10 +146,22 @@ function getElapsedTime() {
  * @param {string} overdriveURL  URL of user's local OverDrive library (ex: https://nypl.overdrive.com)
  */
 function queryGoodreads(goodreadsID, overdriveURL) {
+    // Check for active internet connection before scanning
     if (!navigator.onLine) {
-        console.log("No internet connection.")
+        console.log("Offline. No internet connection.")
         return;
     }
+    fetch('https://www.goodreads.com/', {
+        method: "GET",
+        headers: {
+          "Content-Type": "text/xml",
+        }
+    })
+    .catch(function(err) {
+        console.log("Could not connect to Goodreads. No internet connection.")
+        return;
+    });
+    
     currently_scanning = true;
     // Update Loading view carousel messages every 10 seconds
     let carousel_messages=["We'll scan the most recent 200 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.","We'll automatically refresh your library every 24 hours so titles are always up-to-date.","Toggle between eBooks and audiobooks to find exactly what you're looking for."];

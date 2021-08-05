@@ -32,7 +32,7 @@ _Google Analytics used to collect extension usage statistics & help improve user
 
 ## Permissions
 
-Library Scan only fetches data from public Goodreads profiles and OverDrive library pages. Tutorials and help available at isaacbock.com/library-scan.
+Library Scan only fetches data from public Goodreads profiles and OverDrive library pages. Tutorials and support available at isaacbock.com/library-scan.
 
 ```
 https://www.goodreads.com/*
@@ -42,6 +42,8 @@ https://isaacbock.com/library-scan
 
 ## Changelog
 
+- Version 1.0.3 (08/04/21)
+  - Bug fix: Only refresh while online
 - Version 1.0.2 (05/22/21)
   - Improved book matching algorithm
   - Improved setup instructions & resources

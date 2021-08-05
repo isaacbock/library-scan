@@ -132,7 +132,7 @@ function getElapsedTime() {
                     updateBadgeCount(count);
                 }
                 else {
-                    updateBadgeCount(0, true);
+                    updateBadgeCount(0);
                 }
             }
         }
@@ -225,7 +225,7 @@ function queryGoodreads(goodreadsID, overdriveURL) {
         currently_scanning = false;
         clearInterval(carousel_message_timer);
         _gaq.push(['_trackEvent', 'Goodreads', 'fetched', 'failed']);
-        updateBadgeCount(0, true);
+        updateBadgeCount(0);
 
         // save error state
         chrome.storage.local.set({'error': "Goodreads", 'count': 0});
@@ -373,7 +373,7 @@ async function queryOverdrive(ToRead, overdriveURL) {
             console.log('OverDrive fetch Error ', err);
             currently_scanning = false;
             clearInterval(carousel_message_timer);
-            updateBadgeCount(0, true);
+            updateBadgeCount(0);
 
             // save error state
             chrome.storage.local.set({'error': "OverDrive", 'count': 0});
@@ -432,15 +432,9 @@ async function fetchWithTimeout(uri, options = {}, time=60000) {
  * @param {number} count Number of books currently available
  * @param {boolean} [error=false] Should notification color be set to red? Defaults to false.
  */
-function updateBadgeCount(count, error = false) {
+function updateBadgeCount(count) {
     // default badge to blue background
-    if (!error) {
-        chrome.browserAction.setBadgeBackgroundColor({ color: [0, 123, 255, 255] });
-    }
-    // else upon error, badge to red background
-    else {
-        chrome.browserAction.setBadgeBackgroundColor({ color: [225, 0, 0, 255] });
-    }
+    chrome.browserAction.setBadgeBackgroundColor({ color: [0, 123, 255, 255] });
     // update badge to display count
     if (count!=0) {
         chrome.browserAction.setBadgeText({text: count.toString()});
@@ -448,9 +442,5 @@ function updateBadgeCount(count, error = false) {
     // if count equals zero, do not display badge
     else {
         chrome.browserAction.setBadgeText({text: ''});
-    }
-    // display "!" badge upon error
-    if (error) {
-        chrome.browserAction.setBadgeText({text: ' ! '});
     }
 }

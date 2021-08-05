@@ -264,6 +264,8 @@ function queryGoodreads(goodreadsID, overdriveURL) {
 
 			// Double error timeout upon each repeated error to prevent over-refreshing
 			errorTimeout = errorTimeout > 0 ? errorTimeout * 2 : 1;
+			// Max out error timeout at 1 week
+			if (errorTimeout > refreshWait * 7) errorTimeout = refreshWait * 7;
 
 			// Adjust last run time to incorporate error timeout & save to Chrome local storage
 			let last_run_time = new Date();
@@ -489,6 +491,8 @@ async function queryOverdrive(ToRead, overdriveURL) {
 
 				// Double error timeout upon each repeated error to prevent over-refreshing
 				errorTimeout = errorTimeout > 0 ? errorTimeout * 2 : 1;
+				// Max out error timeout at 1 week
+				if (errorTimeout > refreshWait * 7) errorTimeout = refreshWait * 7;
 
 				// Adjust last run time to incorporate error timeout & save to Chrome local storage
 				let last_run_time = new Date();

@@ -42,7 +42,7 @@ https://isaacbock.com/library-scan
 
 ## Changelog
 
-- Version 1.0.3 (08/04/21)
+- Version 1.0.3 (09/12/21)
   - Bug fix: Only refresh while online
 - Version 1.0.2 (05/22/21)
   - Improved book matching algorithm

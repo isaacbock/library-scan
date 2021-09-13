@@ -67,7 +67,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	// Request to refresh book data
 	if (request.msg === "goodreads" && !currently_scanning) {
 		// Begin by refreshing all titles from Goodreads (which will then progress to identifying these title on OverDrive)
-		queryGoodreads(request.goodreadsID, request.overdriveURL);
+		refresh(request.goodreadsID, request.overdriveURL);
 	}
 	// Get time since last refresh
 	else if (request.msg === "elapsedTime") {
@@ -119,7 +119,7 @@ function getElapsedTime() {
 				// If more than refreshWait minutes have passed, data is outdated; trigger refresh
 				if (elapsedTime > refreshWait && !currently_scanning) {
 					_gaq.push(["_trackEvent", "Data", "refreshed", "automatically"]);
-					queryGoodreads(goodreadsID, overdriveURL);
+					refresh(goodreadsID, overdriveURL);
 					elapsedTime = 0;
 				}
 				// If time elapsed is zero minutes, display as "Last Refreshed: just now"
@@ -157,27 +157,45 @@ function getElapsedTime() {
 }
 
 /**
+ * Refresh data
+ *
+ * @param {number} goodreadsID   User ID number of user's Goodreads account (ex: 12345678)
+ * @param {string} overdriveURL  URL of user's local OverDrive library (ex: https://nypl.overdrive.com)
+ */
+function refresh(goodreadsID, overdriveURL) {
+	// Check for active internet connection before scanning
+	if (navigator.onLine) {
+		fetch("https://www.goodreads.com/", {
+			method: "GET",
+			headers: {
+				"Content-Type": "text/xml",
+			},
+		})
+			// if connected, begin refresh by querying Goodreads for list of TBR books
+			.then((response) => {
+				if (response.status !== 200) {
+					console.log(
+						"Could not connect to Goodreads. No internet connection."
+					);
+					return;
+				}
+				queryGoodreads(goodreadsID, overdriveURL);
+			})
+			.catch(function (err) {
+				console.log("Could not connect to Goodreads. No internet connection.");
+			});
+	} else {
+		console.log("Could not connect to Goodreads. No internet connection.");
+	}
+}
+
+/**
  * Query Goodreads for list of most recent 200 titles from to-read shelf
  *
  * @param {number} goodreadsID   User ID number of user's Goodreads account (ex: 12345678)
  * @param {string} overdriveURL  URL of user's local OverDrive library (ex: https://nypl.overdrive.com)
  */
 function queryGoodreads(goodreadsID, overdriveURL) {
-	// Check for active internet connection before scanning
-	if (!navigator.onLine) {
-		console.log("Offline. No internet connection.");
-		return;
-	}
-	fetch("https://www.goodreads.com/", {
-		method: "GET",
-		headers: {
-			"Content-Type": "text/xml",
-		},
-	}).catch(function (err) {
-		console.log("Could not connect to Goodreads. No internet connection.");
-		return;
-	});
-
 	currently_scanning = true;
 	// Update Loading view carousel messages every 10 seconds
 	let carousel_messages = [
@@ -195,7 +213,9 @@ function queryGoodreads(goodreadsID, overdriveURL) {
 		console.log("Carousel message.");
 	}, 10000);
 	// Set badge to searching icon
-	chrome.browserAction.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
+	chrome.browserAction.setBadgeBackgroundColor({
+		color: [128, 128, 128, 255],
+	});
 	chrome.browserAction.setBadgeText({ text: "⟳" });
 	// Fetch data using Goodreads API
 	fetch(
@@ -290,6 +310,7 @@ function queryGoodreads(goodreadsID, overdriveURL) {
  * @param {string}      overdriveURL        URL of user's local OverDrive library (ex: https://nypl.overdrive.com)
  */
 async function queryOverdrive(ToRead, overdriveURL) {
+	console.log("Query OverDrive.");
 	currently_scanning = true;
 	let available_count = 0;
 	let unavailable_count = 0;

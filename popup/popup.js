@@ -27,25 +27,7 @@ $("#overdriveURL").on("change", function () {
 // Receive messages from background.js (which fetches new data & coordinates timing) and update DOM accordingly
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	if (request.msg === "In Progress") {
-		// If data refresh in progress, display only Loading view
-		$("#home_normal").addClass("d-none");
-		$("#home_loading").removeClass("d-none");
-		$("#available_count").addClass("d-none");
-		$("#pills-tab").addClass("d-none");
-		// Hide bottom nav bar
-		$("#pills-home").addClass("show active");
-		$("#pills-profile").removeClass("show active");
-		$("#pills-home-tab").addClass("active");
-		$("#pills-profile-tab").removeClass("active");
-		$("#pills-home-tab").attr("aria-selected", true);
-		$("#pills-profile-tab").attr("aria-selected", false);
-		// Update progress bar with current stats
-		$("#loading_text").text("Scanning OverDrive library...");
-		$("#loading_bar").attr("aria-valuemax", request.total);
-		$("#loading_bar").attr("aria-valuenow", request.count);
-		let progress = (request.count / request.total) * 100;
-		$("#loading_bar").attr("style", "width: " + progress + "%");
-		$("#loading_count").text(request.count + " of " + request.total + " books");
+		loadingScreen();
 	} else if (request.msg === "CarouselMsg") {
 		// Swap out current progress message with new message (occurs every 10 seconds during refresh)
 		if (
@@ -139,6 +121,13 @@ loadUserData();
  *
  */
 function loadUserData() {
+	// Check for internet connection
+	if (!navigator.onLine) {
+		$("#home_normal").addClass("d-none");
+		document.getElementById("pills-home").innerHTML +=
+			"<div id='goodreads_fail' class='alert alert-danger mt-3 mb-0' role='alert' > <h4 class='alert-heading mb-0'>No internet connection.</h4> <hr class='mt-1 mb-2' /> <p class='mb-1'> Please connect to the internet and reopen Library Scan to begin.</p></div>";
+		return;
+	}
 	// Retrieve user data from Chrome local storage
 	chrome.storage.local.get(
 		[
@@ -167,12 +156,16 @@ function loadUserData() {
 				// display current user data in Settings
 				document.getElementById("goodreadsID").value = goodreadsID;
 				document.getElementById("overdriveURL").value = overdriveURL;
-				// check for previous Goodreads error
+				// check for previous Goodreads error to attempt a data refresh
 				if (error == "Goodreads") {
+					loadingScreen();
+					reloadData(goodreadsID, overdriveURL);
 					goodreadsError();
 				}
-				// check for previous OverDrive error
+				// check for previous OverDrive error to attempt a data refresh
 				else if (error == "OverDrive") {
+					loadingScreen();
+					reloadData(goodreadsID, overdriveURL);
 					overdriveError();
 				}
 				// else no errors, proceed to show library
@@ -227,6 +220,31 @@ function loadUserData() {
 			}
 		}
 	);
+}
+
+/**
+ * Display loading screen
+ */
+function loadingScreen() {
+	// If data refresh in progress, display only Loading view
+	$("#home_normal").addClass("d-none");
+	$("#home_loading").removeClass("d-none");
+	$("#available_count").addClass("d-none");
+	$("#pills-tab").addClass("d-none");
+	// Hide bottom nav bar
+	$("#pills-home").addClass("show active");
+	$("#pills-profile").removeClass("show active");
+	$("#pills-home-tab").addClass("active");
+	$("#pills-profile-tab").removeClass("active");
+	$("#pills-home-tab").attr("aria-selected", true);
+	$("#pills-profile-tab").attr("aria-selected", false);
+	// Update progress bar with current stats
+	$("#loading_text").text("Scanning OverDrive library...");
+	$("#loading_bar").attr("aria-valuemax", request.total);
+	$("#loading_bar").attr("aria-valuenow", request.count);
+	let progress = (request.count / request.total) * 100;
+	$("#loading_bar").attr("style", "width: " + progress + "%");
+	$("#loading_count").text(request.count + " of " + request.total + " books");
 }
 
 /**
@@ -290,7 +308,7 @@ function updateMainPage(BookAvailability) {
 				Available[i].type +
 				"</em></p><a type='button' class='btn btn-primary available' href='" +
 				Available[i].URL +
-				"' target='_blank'>Checkout</a></div></div>";
+				"' target='_blank'>Check Out!</a></div></div>";
 		}
 		// if books are available, prompt user to leave a review
 		if (Available.length > 0) {

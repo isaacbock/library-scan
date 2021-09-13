@@ -158,15 +158,15 @@ function loadUserData() {
 				document.getElementById("overdriveURL").value = overdriveURL;
 				// check for previous Goodreads error to attempt a data refresh
 				if (error == "Goodreads") {
-					loadingScreen();
 					reloadData(goodreadsID, overdriveURL);
 					goodreadsError();
+					loadingScreen();
 				}
 				// check for previous OverDrive error to attempt a data refresh
 				else if (error == "OverDrive") {
-					loadingScreen();
 					reloadData(goodreadsID, overdriveURL);
 					overdriveError();
+					loadingScreen();
 				}
 				// else no errors, proceed to show library
 				else {
@@ -239,8 +239,8 @@ function loadingScreen(request = null) {
 	$("#pills-home-tab").attr("aria-selected", true);
 	$("#pills-profile-tab").attr("aria-selected", false);
 	// Update progress bar with current stats
-	$("#loading_text").text("Scanning OverDrive library...");
 	if (request !== null) {
+		$("#loading_text").text("Scanning OverDrive library...");
 		$("#loading_bar").attr("aria-valuemax", request.total);
 		$("#loading_bar").attr("aria-valuenow", request.count);
 		let progress = (request.count / request.total) * 100;

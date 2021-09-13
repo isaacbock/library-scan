@@ -1,121 +1,297 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Library Scan</title>
-    <link href="../bootstrap/bootstrap.min.css" rel="stylesheet">
-    <link href="popup.css" rel="stylesheet">
-</head>
-<body class="d-flex flex-column">
-    <!-- Header Bar -->
-    <h3 class="p-2 text-center border-bottom mb-0">Library Scan <span id="available_count" class="badge badge-primary d-none"></span></h3>
-    <!-- Active View -->
-    <div class="tab-content flex-grow-1 overflow-auto pl-3 pr-3" id="pills-tabContent">
-        <!-- Library Tab -->
-        <div class="tab-pane fade show active h-100" id="pills-home" role="tabpanel" aria-labelledby="pills-home-tab">
-            <!-- Library: normal view -->
-            <div id="home_normal">
-                <!-- Refresh Data Bar -->
-                <div class="d-flex justify-content-center align-items-center pt-2">
-                    <div class="mr-1"><p class="mb-0">Last Refreshed: </p></div>
-                    <div class="mr-2"><p class="mb-0 font-italic" id="time_since_refresh"></p></div>
-                    <i id="refresh_button" class="fa fa-refresh m-0 p-0" aria-hidden="true"></i>
-                </div>
-                <!-- eBook vs. Audiobook Toggles -->
-                <div class="d-flex justify-content-center align-items-center mt-1 mb-4">
-                    <label class="switch mr-1 mb-0">
-                        <input id="ebook_toggle" type="checkbox" checked>
-                        <span class="slider round"></span>
-                    </label>
-                    <p class="mb-0">eBooks</p>
-                    <label class="switch ml-4 mr-1 mb-0">
-                        <input id="audiobook_toggle" type="checkbox" checked>
-                        <span class="slider round"></span>
-                    </label>
-                    <p class="mb-0">Audiobooks</p>
-                </div>
-                <!-- Available Books -->
-                <div id="available_now"></div>
-                <!-- Books Available Soon -->
-                <div id="available_soon"></div>
-            </div>
-            <!-- Library: loading data view -->
-            <div id="home_loading" class="d-none h-100">
-                <div class="d-flex flex-column justify-content-center align-items-center h-100">
-                    <div class="spinner-border mb-5" style="width: 3rem; height: 3rem;" role="status">
-                        <span class="sr-only">Loading...</span>
-                    </div>
-                    <h3 id="loading_text" class="text-center">Downloading Goodreads Books...</h3>
-                    <h4 id="loading_count" class="text-center mt-1 mb-3"></h4>
-                    <div class="progress w-75 ml-auto mr-auto">
-                        <div id="loading_bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="200" style="width: 0%"></div>
-                    </div>
-                    <p id="loading_carousel_message" class="mt-5 p-2 text-center text-secondary"><em>We'll scan the most recent 200 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.</em></p>
-                </div>
-            </div>
-        </div>
-        <!-- Settings Tab -->
-        <div class="tab-pane fade h-100" id="pills-profile" role="tabpanel" aria-labelledby="pills-profile-tab">
-            <!-- Potential Fetch Error Messages -->
-            <div id="goodreads_fail" class="alert alert-danger mt-3 mb-0 d-none" role="alert">
-                <h4 class="alert-heading mb-0">Sorry...</h4>
-                <hr class="mt-1 mb-2">
-                <p class="mb-1">We were unable to access your To-Read shelf on Goodreads. Please double check that you've given us the correct User ID and that your <a href="https://www.goodreads.com/user/edit?tab=settings" target="_blank" class="helpLink red">profile is public</a>.</p>
-                <a href="https://isaacbock.com/library-scan#goodreads" target="_blank" class="helpLink red mt-1">Need more help?</a>
-            </div>
-            <div id="overdrive_fail" class="alert alert-danger mt-3 mb-0 d-none" role="alert">
-                <h4 class="alert-heading mb-0">Sorry...</h4>
-                <hr class="mt-1 mb-2">
-                <p class="mb-1">We were unable to access your OverDrive library & search for available titles. Please double check that you've given us the correct OverDrive library URL, which should look like:</p>
-                <small><em>https://YOUR-LIBRARY-CODE.overdrive.com</em></small>
-                <a href="https://isaacbock.com/library-scan#overdrive" target="_blank" class="helpLink red mt-2">Need more help?</a>
-            </div>
-            <!-- eBook vs. Audiobook Toggles -->
-            <p class="mb-0 pt-4">Show me...</p>
-            <div class="d-flex justify-content-start align-items-center pt-2 pb-3">
-                <label class="switch mr-1 mb-0">
-                    <input id="ebook_toggle_settings" type="checkbox" checked>
-                    <span class="slider round"></span>
-                </label>
-                <p class="mb-0">eBooks</p>
-                <label class="switch ml-4 mr-1 mb-0">
-                    <input id="audiobook_toggle_settings" type="checkbox" checked>
-                    <span class="slider round"></span>
-                </label>
-                <p class="mb-0">Audiobooks</p>
-            </div>
-            <!-- User Info Form -->
-            <form id="userData" class="pb-4">
-                <div class="form-group">
-                  <label for="goodreadsID">Goodreads User ID<a href="https://isaacbock.com/library-scan#goodreads" target="_blank" class="help ml-2 mt-2">?</a></label>
-                  <input type="number" class="form-control" id="goodreadsID" aria-describedby="goodreadsID" placeholder="12345678" required>
-                  <small id="goodreadsIDHelp" class="form-text text-muted">You can find your User ID number in the URL of your profile page:</small>
-                  <small class="form-text text-muted"><em>goodreads.com/user/show/<strong>12345678</strong>-yourname</em></small>
-                  <label for="overdriveURL" class="mt-4">Local Library OverDrive URL<a href="https://isaacbock.com/library-scan#overdrive" target="_blank" class="help ml-2">?</a></label>
-                  <input type="url" class="form-control" id="overdriveURL" aria-describedby="overdriveURL" placeholder="ex) https://xxxx.overdrive.com" required>
-                  <small id="overdriveIDHelp" class="form-text text-muted">Not sure? <a href="https://www.overdrive.com/libraries" target="_blank" class="helpLink">Search for your OverDrive library</a>.</small>
-                </div>
-                <div class="d-flex justify-content-end align-items-center mt-4">
-                    <a id="help" href="https://isaacbock.com/library-scan#start" target="_blank" class="btn btn-outline-secondary">Tutorial</a>
-                    <button id="userDataSubmit" type="submit" class="btn btn-primary ml-3">Submit</button>
-                </div>
-            </form>
-        </div>
-    </div>
-    <!-- Bottom Nav Bar -->
-    <ul class="nav nav-pills nav-justified border-top d-none" id="pills-tab" role="tablist">
-        <li class="nav-item">
-          <a class="nav-link active" id="pills-home-tab" data-toggle="pill" href="#pills-home" role="tab" aria-controls="pills-home" aria-selected="true"><i class="fa fa-book fa-lg" aria-hidden="true"></i></a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" id="pills-profile-tab" data-toggle="pill" href="#pills-profile" role="tab" aria-controls="pills-profile" aria-selected="false"><i class="fa fa-cog fa-lg" aria-hidden="true"></i></a>
-        </li>
-    </ul>
-    <!-- JS -->
-    <script src="../bootstrap/jquery.min.js"></script>
-    <script src="../bootstrap/bootstrap.min.js"></script>
-    <script src="../bootstrap/fontawesome.min.js"></script>
-    <script src="popup.js"></script>
-</body>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Library Scan</title>
+		<link href="../bootstrap/bootstrap.min.css" rel="stylesheet" />
+		<link href="popup.css" rel="stylesheet" />
+	</head>
+	<body class="d-flex flex-column">
+		<!-- Header Bar -->
+		<h3 class="p-2 text-center border-bottom mb-0">
+			Library Scan
+			<span id="available_count" class="badge badge-primary d-none"></span>
+		</h3>
+		<!-- Active View -->
+		<div
+			class="tab-content flex-grow-1 overflow-auto pl-3 pr-3"
+			id="pills-tabContent"
+		>
+			<!-- Library Tab -->
+			<div
+				class="tab-pane fade show active h-100"
+				id="pills-home"
+				role="tabpanel"
+				aria-labelledby="pills-home-tab"
+			>
+				<!-- Library: normal view -->
+				<div id="home_normal">
+					<!-- Refresh Data Bar -->
+					<div class="d-flex justify-content-center align-items-center pt-2">
+						<div class="mr-1"><p class="mb-0">Last Refreshed:</p></div>
+						<div class="mr-2">
+							<p class="mb-0 font-italic" id="time_since_refresh"></p>
+						</div>
+						<i
+							id="refresh_button"
+							class="fa fa-refresh m-0 p-0"
+							aria-hidden="true"
+						></i>
+					</div>
+					<!-- eBook vs. Audiobook Toggles -->
+					<div
+						class="d-flex justify-content-center align-items-center mt-1 mb-4"
+					>
+						<label class="switch mr-1 mb-0">
+							<input id="ebook_toggle" type="checkbox" checked />
+							<span class="slider round"></span>
+						</label>
+						<p class="mb-0">eBooks</p>
+						<label class="switch ml-4 mr-1 mb-0">
+							<input id="audiobook_toggle" type="checkbox" checked />
+							<span class="slider round"></span>
+						</label>
+						<p class="mb-0">Audiobooks</p>
+					</div>
+					<!-- Available Books -->
+					<div id="available_now"></div>
+					<!-- Books Available Soon -->
+					<div id="available_soon"></div>
+				</div>
+				<!-- Library: loading data view -->
+				<div id="home_loading" class="d-none h-100">
+					<div
+						class="
+							d-flex
+							flex-column
+							justify-content-center
+							align-items-center
+							h-100
+						"
+					>
+						<div
+							class="spinner-border mb-5"
+							style="width: 3rem; height: 3rem"
+							role="status"
+						>
+							<span class="sr-only">Loading...</span>
+						</div>
+						<h3 id="loading_text" class="text-center">
+							Downloading Goodreads Books...
+						</h3>
+						<h4 id="loading_count" class="text-center mt-1 mb-3"></h4>
+						<div class="progress w-75 ml-auto mr-auto">
+							<div
+								id="loading_bar"
+								class="progress-bar progress-bar-striped progress-bar-animated"
+								role="progressbar"
+								aria-valuenow="0"
+								aria-valuemin="0"
+								aria-valuemax="200"
+								style="width: 0%"
+							></div>
+						</div>
+						<p
+							id="loading_carousel_message"
+							class="mt-5 p-2 text-center text-secondary"
+						>
+							<em>
+								We'll scan the most recent 200 books on your Goodreads To-Read
+								shelf to find titles already available at your local OverDrive
+								library.
+							</em>
+						</p>
+					</div>
+				</div>
+			</div>
+			<!-- Settings Tab -->
+			<div
+				class="tab-pane fade h-100"
+				id="pills-profile"
+				role="tabpanel"
+				aria-labelledby="pills-profile-tab"
+			>
+				<!-- Potential Fetch Error Messages -->
+				<div
+					id="goodreads_fail"
+					class="alert alert-danger mt-3 mb-0 d-none"
+					role="alert"
+				>
+					<h4 class="alert-heading mb-0">Sorry...</h4>
+					<hr class="mt-1 mb-2" />
+					<p class="mb-1">
+						We were unable to access your To-Read shelf on Goodreads. Please
+						double check that you've given us the correct User ID and that your
+						<a
+							href="https://www.goodreads.com/user/edit?tab=settings"
+							target="_blank"
+							class="helpLink red"
+						>
+							profile is public.
+						</a>
+					</p>
+					<a
+						href="https://isaacbock.com/library-scan#goodreads"
+						target="_blank"
+						class="helpLink red mt-1"
+					>
+						Need more help?
+					</a>
+				</div>
+				<div
+					id="overdrive_fail"
+					class="alert alert-danger mt-3 mb-0 d-none"
+					role="alert"
+				>
+					<h4 class="alert-heading mb-0">Sorry...</h4>
+					<hr class="mt-1 mb-2" />
+					<p class="mb-1">
+						We were unable to access your OverDrive library & search for
+						available titles. Please double check that you've given us the
+						correct OverDrive library URL, which should look like:
+					</p>
+					<small><em>https://YOUR-LIBRARY-CODE.overdrive.com</em></small>
+					<a
+						href="https://isaacbock.com/library-scan#overdrive"
+						target="_blank"
+						class="helpLink red mt-2"
+					>
+						Need more help?
+					</a>
+				</div>
+				<!-- eBook vs. Audiobook Toggles -->
+				<p class="mb-0 pt-4">Show me...</p>
+				<div class="d-flex justify-content-start align-items-center pt-2 pb-3">
+					<label class="switch mr-1 mb-0">
+						<input id="ebook_toggle_settings" type="checkbox" checked />
+						<span class="slider round"></span>
+					</label>
+					<p class="mb-0">eBooks</p>
+					<label class="switch ml-4 mr-1 mb-0">
+						<input id="audiobook_toggle_settings" type="checkbox" checked />
+						<span class="slider round"></span>
+					</label>
+					<p class="mb-0">Audiobooks</p>
+				</div>
+				<!-- User Info Form -->
+				<form id="userData" class="pb-4">
+					<div class="form-group">
+						<label for="goodreadsID">
+							Goodreads User ID
+							<a
+								href="https://isaacbock.com/library-scan#goodreads"
+								target="_blank"
+								class="help ml-2 mt-2"
+							>
+								?
+							</a>
+						</label>
+						<input
+							type="number"
+							class="form-control"
+							id="goodreadsID"
+							aria-describedby="goodreadsID"
+							placeholder="12345678"
+							required
+						/>
+						<small id="goodreadsIDHelp" class="form-text text-muted">
+							You can find your User ID number in the URL of your profile page:
+						</small>
+						<small class="form-text text-muted">
+							<em>
+								goodreads.com/user/show/
+								<strong>12345678</strong>
+								-yourname
+							</em>
+						</small>
+						<label for="overdriveURL" class="mt-4">
+							Local Library OverDrive URL
+							<a
+								href="https://isaacbock.com/library-scan#overdrive"
+								target="_blank"
+								class="help ml-2"
+							>
+								?
+							</a>
+						</label>
+						<input
+							type="url"
+							class="form-control"
+							id="overdriveURL"
+							aria-describedby="overdriveURL"
+							placeholder="ex) https://xxxx.overdrive.com"
+							required
+						/>
+						<small id="overdriveIDHelp" class="form-text text-muted">
+							Not sure?
+							<a
+								href="https://www.overdrive.com/libraries"
+								target="_blank"
+								class="helpLink"
+							>
+								Search for your OverDrive library
+							</a>
+							.
+						</small>
+					</div>
+					<div class="d-flex justify-content-end align-items-center mt-4">
+						<a
+							id="help"
+							href="https://isaacbock.com/library-scan#start"
+							target="_blank"
+							class="btn btn-outline-secondary"
+						>
+							Tutorial
+						</a>
+						<button
+							id="userDataSubmit"
+							type="submit"
+							class="btn btn-primary ml-3"
+						>
+							Submit
+						</button>
+					</div>
+				</form>
+			</div>
+		</div>
+		<!-- Bottom Nav Bar -->
+		<ul
+			class="nav nav-pills nav-justified border-top d-none"
+			id="pills-tab"
+			role="tablist"
+		>
+			<li class="nav-item">
+				<a
+					class="nav-link active"
+					id="pills-home-tab"
+					data-toggle="pill"
+					href="#pills-home"
+					role="tab"
+					aria-controls="pills-home"
+					aria-selected="true"
+				>
+					<i class="fa fa-book fa-lg" aria-hidden="true"></i>
+				</a>
+			</li>
+			<li class="nav-item">
+				<a
+					class="nav-link"
+					id="pills-profile-tab"
+					data-toggle="pill"
+					href="#pills-profile"
+					role="tab"
+					aria-controls="pills-profile"
+					aria-selected="false"
+				>
+					<i class="fa fa-cog fa-lg" aria-hidden="true"></i>
+				</a>
+			</li>
+		</ul>
+		<!-- JS -->
+		<script src="../bootstrap/jquery.min.js"></script>
+		<script src="../bootstrap/bootstrap.min.js"></script>
+		<script src="../bootstrap/fontawesome.min.js"></script>
+		<script src="popup.js"></script>
+	</body>
 </html>

@@ -27,7 +27,7 @@ $("#overdriveURL").on("change", function () {
 // Receive messages from background.js (which fetches new data & coordinates timing) and update DOM accordingly
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	if (request.msg === "In Progress") {
-		loadingScreen();
+		loadingScreen(request);
 	} else if (request.msg === "CarouselMsg") {
 		// Swap out current progress message with new message (occurs every 10 seconds during refresh)
 		if (
@@ -225,7 +225,7 @@ function loadUserData() {
 /**
  * Display loading screen
  */
-function loadingScreen() {
+function loadingScreen(request = null) {
 	// If data refresh in progress, display only Loading view
 	$("#home_normal").addClass("d-none");
 	$("#home_loading").removeClass("d-none");
@@ -240,11 +240,13 @@ function loadingScreen() {
 	$("#pills-profile-tab").attr("aria-selected", false);
 	// Update progress bar with current stats
 	$("#loading_text").text("Scanning OverDrive library...");
-	$("#loading_bar").attr("aria-valuemax", request.total);
-	$("#loading_bar").attr("aria-valuenow", request.count);
-	let progress = (request.count / request.total) * 100;
-	$("#loading_bar").attr("style", "width: " + progress + "%");
-	$("#loading_count").text(request.count + " of " + request.total + " books");
+	if (request !== null) {
+		$("#loading_bar").attr("aria-valuemax", request.total);
+		$("#loading_bar").attr("aria-valuenow", request.count);
+		let progress = (request.count / request.total) * 100;
+		$("#loading_bar").attr("style", "width: " + progress + "%");
+		$("#loading_count").text(request.count + " of " + request.total + " books");
+	}
 }
 
 /**

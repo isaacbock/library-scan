@@ -21,6 +21,14 @@ extpay.onPaid.addListener(function () {
 const STALE_SCAN_MS = 10 * 60 * 1000;
 
 /**
+ * @type {number} How often the 1-minute alarm re-validates Pro status against
+ * the ExtensionPay API. Payments are caught instantly by onPaid, and scans &
+ * popup opens do their own live checks — this is just a slow safety net for
+ * out-of-band changes (refunds, dashboard edits).
+ */
+const PRO_RECHECK_MS = 6 * 60 * 60 * 1000;
+
+/**
  * @type {number} Maximum RSS pages for free users (100 books per page)
  */
 const FREE_MAX_RSS_PAGES = 1;
@@ -191,17 +199,23 @@ function getElapsedTime() {
 						chrome.storage.session.set({ currently_scanning: false });
 					}
 
-					let isPro = false;
-					try {
-						const ep = ExtPay('library-scan');
-						const user = await ep.getUser();
-						isPro = !!user.paid;
-						chrome.storage.local.set({ isPro: isPro });
-					} catch (e) {
-						const proResult = await new Promise(function (resolve) {
-							chrome.storage.local.get(["isPro"], function (r) { resolve(r); });
-						});
-						isPro = !!proResult.isPro;
+					// Gate auto-refresh on the cached Pro status; a live getUser()
+					// here used to hit the ExtensionPay API on every 1-minute tick.
+					const proResult = await new Promise(function (resolve) {
+						chrome.storage.local.get(["isPro", "isProCheckedAt"], function (r) { resolve(r); });
+					});
+					let isPro = !!proResult.isPro;
+					if (!proResult.isProCheckedAt || (Date.now() - proResult.isProCheckedAt) > PRO_RECHECK_MS) {
+						// Bump the timestamp before fetching so a failing API
+						// doesn't get retried every minute.
+						chrome.storage.local.set({ isProCheckedAt: Date.now() });
+						try {
+							const user = await extpay.getUser();
+							isPro = !!user.paid;
+							chrome.storage.local.set({ isPro: isPro });
+						} catch (e) {
+							// Network error — keep the cached value
+						}
 					}
 
 					if (isPro && elapsedTime > refreshWait && !scanning) {
@@ -364,13 +378,14 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 	isScanningLocal = true;
 	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
 
-	// Determine page limit based on Pro status (live check, fallback to cache)
+	// Determine page limit based on Pro status (live check, fallback to cache).
+	// Uses the shared top-level extpay instance so an unpaid→paid transition
+	// observed here still fires the onPaid listener registered above.
 	let isPro = false;
 	try {
-		const ep = ExtPay('library-scan');
-		const user = await ep.getUser();
+		const user = await extpay.getUser();
 		isPro = !!user.paid;
-		chrome.storage.local.set({ isPro: isPro });
+		chrome.storage.local.set({ isPro: isPro, isProCheckedAt: Date.now() });
 	} catch (e) {
 		const proResult = await new Promise(function (resolve) {
 			chrome.storage.local.get(["isPro"], function (r) { resolve(r); });

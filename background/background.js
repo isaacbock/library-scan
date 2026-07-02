@@ -803,7 +803,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 					body += "\n...and " + (listBooks.length - 8) + " more";
 				}
 
-				var notifData = { title: "Library Scan Pro", message: body };
+				var notifData = { title: "Library Scan", message: body };
 				chrome.notifications.create("library-scan-new-books", {
 					type: "basic",
 					iconUrl: chrome.runtime.getURL("icons/icon128.png"),

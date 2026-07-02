@@ -404,11 +404,14 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		shelves = (stored && stored.length > 0) ? stored : ["to-read"];
 	}
 
-	// Free tier only scans the default "to-read" shelf, regardless of what was
-	// passed or stored. This enforces the gate server-side so the popup no
-	// longer has to destructively overwrite the user's saved shelf selection.
+	// Free tier only scans the default "to-read" shelf and the first saved
+	// library, regardless of what was passed or stored. This enforces the gate
+	// server-side so the popup never has to destructively overwrite saved
+	// settings — a downgraded user's extra shelves/libraries stay saved and
+	// re-activate if they upgrade again.
 	if (!isPro) {
 		shelves = ["to-read"];
+		overdriveURLs = overdriveURLs.slice(0, 1);
 	}
 
 	Analytics.trackScanStarted(source || "unknown", shelves.length, overdriveURLs.length);

@@ -219,13 +219,14 @@ document.addEventListener("DOMContentLoaded", function () {
 	// completed while this popup was closed and was then confirmed by the
 	// background poll (which writes isPro). Without this, users had to close
 	// and reopen the popup before their new features appeared.
+	// No currentIsPro guard here: Chrome only fires onChanged on real value
+	// changes, and getUser()'s .then may have already updated currentIsPro —
+	// a guard would then swallow the shelf-picker re-render, leaving saved
+	// shelves visually unchecked (a duplicate render is harmless).
 	chrome.storage.onChanged.addListener(function (changes, area) {
 		if (area === "local" && changes.isPro) {
-			var nowPro = !!changes.isPro.newValue;
-			if (nowPro !== currentIsPro) {
-				applyProStatus(nowPro);
-				refreshShelfPickerFromStorage();
-			}
+			applyProStatus(!!changes.isPro.newValue);
+			refreshShelfPickerFromStorage();
 		}
 	});
 
@@ -1143,13 +1144,20 @@ function saveUserData() {
 		return;
 	}
 
-	var selectedShelves = getSelectedShelves();
+	// Only persist the shelf selection for Pro users. For free users the
+	// non-to-read toggles render disabled+unchecked, so saving the DOM state
+	// here would wipe a downgraded user's saved multi-shelf selection (the
+	// background scan already enforces the free-tier limit).
+	var selectedShelves = currentIsPro ? getSelectedShelves() : undefined;
 
-	chrome.storage.local.set({
+	var settings = {
 		goodreadsID: goodreadsID,
 		overdriveURLs: overdriveURLs,
-		selectedShelves: selectedShelves,
-	});
+	};
+	if (selectedShelves) {
+		settings.selectedShelves = selectedShelves;
+	}
+	chrome.storage.local.set(settings);
 
 	// Remove old failure messages
 	document.getElementById("goodreads_fail").classList.add("d-none");

@@ -4,6 +4,11 @@ const extpay = ExtPay('library-scan');
 // Current filter tab: "all", "eBook", or "Audiobook"
 var activeFilter = "all";
 
+// Single source of truth for Pro status within the popup. Updated by
+// applyProStatus() so shelf gating and other UI never read a second, racing
+// copy from storage.
+var currentIsPro = false;
+
 // Search state
 var searchDebounceTimer = null;
 var currentSearchController = null;
@@ -167,6 +172,12 @@ document.addEventListener("DOMContentLoaded", function () {
 		});
 	});
 
+	// Seed UI from cached Pro status immediately so the popup opens in the
+	// right state; getUser() below refines it once the network responds.
+	chrome.storage.local.get(["isPro"], function (result) {
+		applyProStatus(!!result.isPro);
+	});
+
 	// ExtensionPay: check pro status, cache it, and toggle UI
 	extpay.getUser().then(function (user) {
 		var isPro = !!user.paid;
@@ -201,6 +212,21 @@ document.addEventListener("DOMContentLoaded", function () {
 	extpay.onPaid.addListener(function () {
 		chrome.storage.local.set({ isPro: true });
 		applyProStatus(true);
+		refreshShelfPickerFromStorage();
+	});
+
+	// React live to Pro status captured elsewhere — e.g. a payment that
+	// completed while this popup was closed and was then confirmed by the
+	// background poll (which writes isPro). Without this, users had to close
+	// and reopen the popup before their new features appeared.
+	chrome.storage.onChanged.addListener(function (changes, area) {
+		if (area === "local" && changes.isPro) {
+			var nowPro = !!changes.isPro.newValue;
+			if (nowPro !== currentIsPro) {
+				applyProStatus(nowPro);
+				refreshShelfPickerFromStorage();
+			}
+		}
 	});
 
 	// Initialize user data and view
@@ -496,10 +522,13 @@ function loadUserDataOnline() {
 
 			if (
 				typeof goodreadsID !== "undefined" &&
-				overdriveURLs && overdriveURLs.length > 0 &&
-				typeof error !== "undefined"
+				overdriveURLs && overdriveURLs.length > 0
 			) {
-				// Existing user — use full-height popup
+				// Existing user — use full-height popup.
+				// Note: we key off saved settings, NOT `error`. `error` isn't
+				// written until the first scan finishes, so requiring it here
+				// used to bounce users back into the setup wizard if they closed
+				// and reopened the popup during (or after a failed) first scan.
 				document.body.classList.add("full-height");
 
 				// Hide wizard, show main UI
@@ -1040,7 +1069,7 @@ function renderBooks(BookAvailability) {
 	const countBadge = document.getElementById("available_count");
 	countBadge.classList.remove("d-none");
 	countBadge.textContent = Available.length.toString();
-	chrome.storage.local.set({ count: Available.length.toString() });
+	chrome.storage.local.set({ count: Available.length });
 	chrome.runtime.sendMessage({
 		msg: "badgeCount",
 		count: Available.length,
@@ -1244,6 +1273,45 @@ function onSearchInput() {
 }
 
 /**
+ * Extract the `window.OverDrive.mediaItems = {...};` JSON object from an
+ * OverDrive HTML page by balancing braces (string-aware), rather than a greedy
+ * single-line regex that can over- or under-match if the page format shifts.
+ *
+ * @param {string} html  Raw OverDrive page HTML
+ * @returns {Object|null} Parsed mediaItems object, or null if not found/parseable
+ */
+function extractOverdriveMediaItems(html) {
+	var marker = html.match(/window\.OverDrive\.mediaItems\s*=\s*/);
+	if (!marker) return null;
+	var start = marker.index + marker[0].length;
+	if (html[start] !== "{") return null;
+
+	var depth = 0, inStr = false, esc = false;
+	for (var i = start; i < html.length; i++) {
+		var ch = html[i];
+		if (inStr) {
+			if (esc) esc = false;
+			else if (ch === "\\") esc = true;
+			else if (ch === '"') inStr = false;
+		} else if (ch === '"') {
+			inStr = true;
+		} else if (ch === "{") {
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0) {
+				try {
+					return JSON.parse(html.slice(start, i + 1));
+				} catch (e) {
+					return null;
+				}
+			}
+		}
+	}
+	return null;
+}
+
+/**
  * Search OverDrive library for a query and merge results with local matches
  *
  * @param {string} query  The search query
@@ -1273,10 +1341,8 @@ function searchOverdrive(query) {
 
 				var liveBooks = [];
 				try {
-					var regexSearch = /window\.OverDrive\.mediaItems\s*=\s*(\{.*\});/;
-					var overdriveSearchResults = html.match(regexSearch);
-					if (overdriveSearchResults) {
-						var jsonResults = JSON.parse(overdriveSearchResults[1]);
+					var jsonResults = extractOverdriveMediaItems(html);
+					if (jsonResults) {
 						for (var key in jsonResults) {
 							try {
 								var book = jsonResults[key];
@@ -1580,6 +1646,19 @@ function loadShelvesForUser(goodreadsID) {
 }
 
 /**
+ * Re-render the shelf picker from already-fetched data in storage, applying
+ * the current Pro gating. Used when Pro status changes while the popup is open
+ * so shelves unlock/lock live without needing a re-fetch or a popup reopen.
+ */
+function refreshShelfPickerFromStorage() {
+	chrome.storage.local.get(["availableShelves", "selectedShelves", "shelfCounts"], function (result) {
+		if (result.availableShelves && result.availableShelves.length > 0) {
+			renderShelfPicker(result.availableShelves, result.selectedShelves || ["to-read"], result.shelfCounts || {});
+		}
+	});
+}
+
+/**
  * Render shelf pills in the shelf picker.
  *
  * @param {string[]} shelves   All available shelf names
@@ -1642,10 +1721,9 @@ function renderShelfPicker(shelves, selected, counts) {
 	// Mark sole-checked state for CSS styling
 	listEl.classList.toggle("sole-checked", listEl.querySelectorAll('input:checked').length === 1);
 
-	// Apply Pro gating to newly rendered shelves
-	chrome.storage.local.get(["isPro"], function (result) {
-		applyShelfProGating(!!result.isPro);
-	});
+	// Apply Pro gating to newly rendered shelves using the popup's single
+	// source of truth (avoids racing a second storage read against getUser()).
+	applyShelfProGating(currentIsPro);
 }
 
 /**
@@ -1711,11 +1789,13 @@ function applyShelfProGating(isPro) {
 			nameSpan.forEach(function (s) { s.style.cursor = "pointer"; });
 		}
 	});
-
-	// Save corrected selection (free users forced to to-read only)
-	if (!isPro) {
-		chrome.storage.local.set({ selectedShelves: ["to-read"] });
-	}
+	// NOTE: We intentionally do NOT overwrite the saved `selectedShelves` here.
+	// A transient getUser() failure or a render that runs before Pro status
+	// resolves used to wipe a paying user's multi-shelf selection down to
+	// ["to-read"]. The free-tier limit is now enforced server-side in the
+	// background scan, and the disabled/unchecked toggles already prevent free
+	// users from selecting extra shelves — so the saved selection is preserved
+	// and restored intact if the user (re)gains Pro.
 }
 
 /**
@@ -1802,6 +1882,9 @@ function overdriveError(failedLibraries) {
  * @param {boolean} isPro  Whether the user has paid for Pro
  */
 function applyProStatus(isPro) {
+	// Record the single source of truth for the rest of the popup.
+	currentIsPro = isPro;
+
 	// Header: show/hide Pro badge
 	document.getElementById("pro_header_badge").classList.toggle("d-none", !isPro);
 

@@ -5,6 +5,21 @@ importScripts('../analytics.js');
 const extpay = ExtPay('library-scan');
 extpay.startBackground();
 
+// Cache paid status the moment ExtPay confirms payment. The background poll
+// (ExtPay's poll_user_paid) runs even while the popup is closed during the
+// payment flow, so this is the reliable source of truth for Pro status —
+// the popup then reacts to the isPro storage change and updates live.
+extpay.onPaid.addListener(function () {
+	chrome.storage.local.set({ isPro: true });
+});
+
+/**
+ * @type {number} A scan is considered stale (e.g. the MV3 service worker was
+ * terminated mid-scan) after this long, so a stuck currently_scanning flag
+ * can't permanently block auto-refresh.
+ */
+const STALE_SCAN_MS = 10 * 60 * 1000;
+
 /**
  * @type {number} Maximum RSS pages for free users (100 books per page)
  */
@@ -33,7 +48,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Open popup when notification is clicked
 chrome.notifications.onClicked.addListener(function (notificationId) {
 	if (notificationId === "library-scan-new-books") {
-		chrome.action.openPopup();
+		// openPopup() requires an active user gesture in most Chrome versions
+		// and rejects otherwise — guard so the click handler never throws.
+		try {
+			var opened = chrome.action.openPopup();
+			if (opened && typeof opened.catch === "function") opened.catch(function () {});
+		} catch (e) {}
 		chrome.notifications.clear(notificationId);
 	}
 });
@@ -160,7 +180,17 @@ function getElapsedTime() {
 				console.log("Elapsed Time Since Last Refresh: " + elapsedTime + " min");
 
 				// Auto-refresh only for Pro users
-				chrome.storage.session.get(["currently_scanning"], async function (scanResult) {
+				chrome.storage.session.get(["currently_scanning", "scan_started_at"], async function (scanResult) {
+					// A scan flag older than STALE_SCAN_MS means the service
+					// worker was likely killed mid-scan — don't let it block
+					// auto-refresh forever.
+					let scanning = scanResult.currently_scanning;
+					if (scanning && (!scanResult.scan_started_at || (Date.now() - scanResult.scan_started_at) > STALE_SCAN_MS)) {
+						scanning = false;
+						isScanningLocal = false;
+						chrome.storage.session.set({ currently_scanning: false });
+					}
+
 					let isPro = false;
 					try {
 						const ep = ExtPay('library-scan');
@@ -174,7 +204,7 @@ function getElapsedTime() {
 						isPro = !!proResult.isPro;
 					}
 
-					if (isPro && elapsedTime > refreshWait && !scanResult.currently_scanning) {
+					if (isPro && elapsedTime > refreshWait && !scanning) {
 						refresh(goodreadsID, overdriveURLs, result.selectedShelves, "auto");
 						elapsedTime = 0;
 					}
@@ -280,6 +310,14 @@ async function fetchShelves(goodreadsID) {
  * @param {string}   [source]     Scan trigger source ("manual" or "auto")
  */
 function refresh(goodreadsID, overdriveURLs, shelves, source) {
+	// Single guard point: never start a scan while one is already running.
+	// (The manual message handler also checks this, but auto-refresh calls
+	// refresh() directly, and the async Goodreads reachability check below
+	// leaves a window where the 1-minute alarm could otherwise double-fire.)
+	if (isScanningLocal) return;
+	isScanningLocal = true;
+	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
+
 	// Invalidate any in-flight scan and capture this scan's ID
 	const myScanId = ++currentScanId;
 
@@ -301,9 +339,14 @@ function refresh(goodreadsID, overdriveURLs, shelves, source) {
 			})
 			.catch(function (err) {
 				console.log("Could not connect to Goodreads. No internet connection.");
+				// Release the lock we took above so a later scan can run.
+				isScanningLocal = false;
+				chrome.storage.session.set({ currently_scanning: false });
 			});
 	} else {
 		console.log("Could not connect to Goodreads. No internet connection.");
+		isScanningLocal = false;
+		chrome.storage.session.set({ currently_scanning: false });
 	}
 }
 
@@ -319,7 +362,7 @@ function refresh(goodreadsID, overdriveURLs, shelves, source) {
  */
 async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source) {
 	isScanningLocal = true;
-	chrome.storage.session.set({ currently_scanning: true });
+	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
 
 	// Determine page limit based on Pro status (live check, fallback to cache)
 	let isPro = false;
@@ -344,6 +387,13 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 			});
 		});
 		shelves = (stored && stored.length > 0) ? stored : ["to-read"];
+	}
+
+	// Free tier only scans the default "to-read" shelf, regardless of what was
+	// passed or stored. This enforces the gate server-side so the popup no
+	// longer has to destructively overwrite the user's saved shelf selection.
+	if (!isPro) {
+		shelves = ["to-read"];
 	}
 
 	Analytics.trackScanStarted(source || "unknown", shelves.length, overdriveURLs.length);
@@ -555,9 +605,8 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 				const html = await res.text();
 
 				// Identify book availability data in response
-				let regexSearch = /window\.OverDrive\.mediaItems\s*=\s*(\{.*\});/;
-				let overdriveSearchMatch = html.match(regexSearch);
-				if (!overdriveSearchMatch) {
+				let overdriveJSONresults = extractOverdriveMediaItems(html);
+				if (!overdriveJSONresults) {
 					console.log(
 						ToRead[i].title + " by " + ToRead[i].author + " not found at " + overdriveURL
 					);
@@ -577,7 +626,6 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 					continue;
 				}
 				libraryMatchCount++;
-				let overdriveJSONresults = JSON.parse(overdriveSearchMatch[1]);
 				let JSON_length = Object.keys(overdriveJSONresults).length;
 
 				if (JSON_length === 0) {
@@ -813,6 +861,45 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		Analytics.trackOverdriveScanCompleted(available_count, unavailable_count, libraryDomains, failedDomains);
 		console.log("OverDrive scan complete.");
 	}
+}
+
+/**
+ * Extract the `window.OverDrive.mediaItems = {...};` JSON object from an
+ * OverDrive HTML page by balancing braces (string-aware), instead of a greedy
+ * single-line regex that can over- or under-match if the page format shifts.
+ *
+ * @param {string} html  Raw OverDrive page HTML
+ * @returns {Object|null} Parsed mediaItems object, or null if not found/parseable
+ */
+function extractOverdriveMediaItems(html) {
+	const marker = html.match(/window\.OverDrive\.mediaItems\s*=\s*/);
+	if (!marker) return null;
+	let start = marker.index + marker[0].length;
+	if (html[start] !== "{") return null;
+
+	let depth = 0, inStr = false, esc = false;
+	for (let i = start; i < html.length; i++) {
+		const ch = html[i];
+		if (inStr) {
+			if (esc) esc = false;
+			else if (ch === "\\") esc = true;
+			else if (ch === '"') inStr = false;
+		} else if (ch === '"') {
+			inStr = true;
+		} else if (ch === "{") {
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0) {
+				try {
+					return JSON.parse(html.slice(start, i + 1));
+				} catch (e) {
+					return null;
+				}
+			}
+		}
+	}
+	return null;
 }
 
 /**

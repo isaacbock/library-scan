@@ -225,16 +225,18 @@ function getElapsedTime() {
 
 					// Send elapsed time to popup
 					chrome.runtime.sendMessage({ msg: "ElapsedTime", time: formatElapsedTime(elapsedTime) }).catch(() => {});
-				});
 
-				// Auto add badge count (in case of extension update or reset)
-				if (typeof error !== "undefined" && typeof count !== "undefined") {
-					if (error == "None") {
-						updateBadgeCount(count);
-					} else {
-						updateBadgeError();
+					// Auto add badge count (in case of extension update or reset) —
+					// but never while scanning, or this would stomp the N% progress
+					// badge with the stale count on every 1-minute tick.
+					if (!scanning && typeof error !== "undefined" && typeof count !== "undefined") {
+						if (error == "None") {
+							updateBadgeCount(count);
+						} else {
+							updateBadgeError();
+						}
 					}
-				}
+				});
 			}
 		}
 	);
@@ -424,6 +426,8 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		"Use the search bar to explore your OverDrive libraries beyond just your Goodreads shelves.",
 	];
 	let carousel_position = 1;
+	// Kill any timer leaked by a previous (superseded) scan before starting ours
+	clearInterval(carousel_message_timer);
 	carousel_message_timer = setInterval(function () {
 		chrome.runtime.sendMessage({
 			msg: "CarouselMsg",
@@ -496,8 +500,9 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		}
 
 		if (myScanId !== currentScanId) {
+			// Superseded — don't touch the carousel timer: it's either already
+			// cleared (cancel) or belongs to the newer scan.
 			console.log("Scan invalidated during Goodreads fetch.");
-			clearInterval(carousel_message_timer);
 			return;
 		}
 
@@ -524,6 +529,12 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		}).catch(() => {});
 
 	} catch (err) {
+		// A superseded scan must not release the lock, clear the timer, or
+		// write error state — all of that now belongs to the newer scan.
+		if (myScanId !== currentScanId) {
+			console.log("Scan invalidated during Goodreads fetch (error path).");
+			return;
+		}
 		console.log("Goodreads fetch Error ", err);
 		isScanningLocal = false;
 		chrome.storage.session.set({ currently_scanning: false });
@@ -713,10 +724,11 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		}
 	}
 
-	// Scan was invalidated (cancelled or superseded) — exit without saving partial results
+	// Scan was invalidated (cancelled or superseded) — exit without saving
+	// partial results. Leave the carousel timer alone: it's either already
+	// cleared (cancel) or belongs to the newer scan.
 	if (myScanId !== currentScanId) {
 		console.log("Scan invalidated during OverDrive fetch.");
-		clearInterval(carousel_message_timer);
 		return;
 	}
 

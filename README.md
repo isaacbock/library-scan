@@ -24,7 +24,7 @@ Scan any OverDrive library for available eBooks & audiobooks from your Goodreads
 
 _Not affiliated with Goodreads or OverDrive, Inc. All data accessed and interpreted is available publicly online._
 
-_Google Analytics used to collect extension usage statistics & help improve user experience. To opt-out of Google Analytics tracking, please visit http://tools.google.com/dlpage/gaoptout or set up a filter within an ad blocker tool._
+_Google Analytics 4 (via Measurement Protocol) is used to collect anonymous usage statistics to help improve the extension. No personally identifiable information is collected. Your IP address is used by Google for approximate geographic reporting but is not stored._
 
 ## Installation
 
@@ -42,6 +42,13 @@ https://isaacbock.com/library-scan
 
 ## Changelog
 
+- Version 2.0.0 (04/02/26)
+  - Manifest V3 migration (background service worker)
+  - Redesigned popup: onboarding wizard, book cover cards, search, & media-type filters
+  - Library Scan Pro: multiple OverDrive libraries, any Goodreads shelves, unlimited books per scan, & daily auto-scans with new-book notifications
+  - Goodreads profile auto-detection & shelf picker
+  - Upgraded to Bootstrap 5, removed jQuery
+  - Google Analytics 4 usage analytics (Measurement Protocol)
 - Version 1.0.3 (09/12/21)
   - Bug fix: Only refresh while online
 - Version 1.0.2 (05/22/21)

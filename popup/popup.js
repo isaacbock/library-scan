@@ -9,6 +9,10 @@ var activeFilter = "all";
 // copy from storage.
 var currentIsPro = false;
 
+// A currently_scanning flag older than this is stale (service worker was
+// likely killed mid-scan). Must match STALE_SCAN_MS in background.js.
+var STALE_SCAN_MS = 10 * 60 * 1000;
+
 // Search state
 var searchDebounceTimer = null;
 var currentSearchController = null;
@@ -265,10 +269,13 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 			});
 		}
 	} else if (request.msg === "Complete") {
+		// Whether the user was watching the scan (loading view visible) —
+		// decides below if we yank them over to the Library tab.
+		var wasWatchingScan = !document.getElementById("home_loading").classList.contains("d-none");
 		// Reset Loading view statistics to default
 		document.getElementById("loading_text").textContent = "Downloading Goodreads Books...";
 		document.getElementById("loading_carousel_message").innerHTML =
-			"<em>We'll scan up to 500 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.</em>";
+			"<em>We'll scan your selected Goodreads shelves to find titles already available at your local OverDrive library.</em>";
 		const loadingBar = document.getElementById("loading_bar");
 		loadingBar.setAttribute("aria-valuemax", "200");
 		loadingBar.setAttribute("aria-valuenow", "0");
@@ -280,11 +287,15 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 		document.getElementById("goodreads_fail").classList.add("d-none");
 		document.getElementById("overdrive_fail").classList.add("d-none");
 		document.getElementById("goodreadsID").closest(".input-group").classList.remove("has-error");
-		// Switch to Library tab and display new book data
-		document.getElementById("pills-home").classList.add("show", "active");
-		document.getElementById("pills-settings").classList.remove("show", "active");
-		document.getElementById("pills-home-tab").classList.add("active");
-		document.getElementById("pills-settings-tab").classList.remove("active");
+		// Switch to Library tab and display new book data — but only if the
+		// user was watching the scan; a background auto-refresh completing
+		// shouldn't yank them out of the Settings tab mid-edit.
+		if (wasWatchingScan) {
+			document.getElementById("pills-home").classList.add("show", "active");
+			document.getElementById("pills-settings").classList.remove("show", "active");
+			document.getElementById("pills-home-tab").classList.add("active");
+			document.getElementById("pills-settings-tab").classList.remove("active");
+		}
 		updateMainPage(request.BookAvailability);
 		if (request.failedLibraries && request.failedLibraries.length > 0) {
 			showPartialOverdriveError(request.failedLibraries);
@@ -296,7 +307,8 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	} else if (request.msg === "OverdriveError") {
 		overdriveError(request.failedLibraries);
 	}
-	return true;
+	// No return value: this listener never calls sendResponse, and returning
+	// true would hold every message channel open until the popup closes.
 });
 
 function logReload() {
@@ -561,37 +573,51 @@ function loadUserDataOnline() {
 					}
 				});
 
-				if (error === "Goodreads" || error === "OverDrive") {
-					// Show error banner on the relevant settings sub-tab
-					if (error === "Goodreads") {
-						goodreadsError();
+				// If a scan is actively running (popup opened mid-scan), show the
+				// loading view immediately instead of stale results — progress
+				// messages take over from there. A stale flag (service worker
+				// killed mid-scan) falls through to the normal views.
+				chrome.storage.session.get(["currently_scanning", "scan_started_at"], function (session) {
+					var scanActive = session.currently_scanning && session.scan_started_at &&
+						(Date.now() - session.scan_started_at) < STALE_SCAN_MS;
+					if (scanActive) {
+						showTab("pills-home-tab");
+						loadingScreen();
+						return;
+					}
+
+					if (error === "Goodreads" || error === "OverDrive") {
+						// Show error banner on the relevant settings sub-tab
+						if (error === "Goodreads") {
+							goodreadsError();
+						} else {
+							overdriveError();
+						}
+
+						// If we have cached books from a previous successful scan,
+						// keep them browsable on the Library tab.
+						if (typeof BookAvailability !== "undefined") {
+							updateMainPage(BookAvailability);
+							chrome.runtime.sendMessage({ msg: "elapsedTime" });
+						}
 					} else {
-						overdriveError();
-					}
+						// Default to Library view and show bottom nav bar
+						showTab("pills-home-tab");
+						document.getElementById("pills-tab").classList.remove("d-none");
+						document.body.classList.add("full-height");
 
-					// If we have cached books from a previous successful scan,
-					// keep them browsable on the Library tab.
-					if (typeof BookAvailability !== "undefined") {
-						updateMainPage(BookAvailability);
-						chrome.runtime.sendMessage({ msg: "elapsedTime" });
-					}
-				} else {
-					// Default to Library view and show bottom nav bar
-					showTab("pills-home-tab");
-					document.getElementById("pills-tab").classList.remove("d-none");
-					document.body.classList.add("full-height");
+						// Hide all Library views until book data is loaded
+						document.getElementById("home_normal").classList.add("d-none");
+						document.getElementById("home_loading").classList.add("d-none");
 
-					// Hide all Library views until book data is loaded
-					document.getElementById("home_normal").classList.add("d-none");
-					document.getElementById("home_loading").classList.add("d-none");
-
-					if (typeof BookAvailability !== "undefined") {
-						updateMainPage(BookAvailability);
-						chrome.runtime.sendMessage({ msg: "elapsedTime" });
-					} else {
-						reloadData(goodreadsID, overdriveURLs);
+						if (typeof BookAvailability !== "undefined") {
+							updateMainPage(BookAvailability);
+							chrome.runtime.sendMessage({ msg: "elapsedTime" });
+						} else {
+							reloadData(goodreadsID, overdriveURLs);
+						}
 					}
-				}
+				});
 			} else {
 				// New user — show wizard
 				hideSkeleton();

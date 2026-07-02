@@ -1,30 +1,192 @@
 body {
+	width: 400px;
+	max-width: 400px;
+}
+body.full-height {
 	height: 550px;
 	max-height: 550px;
-	width: 375px;
-	max-width: 375px;
 }
-.cover {
-	width: 40%;
+/* Book grid */
+.book-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 10px;
+}
+.book-card {
+	background-color: #e9ecef;
+	border-radius: 10px;
+	padding: 10px;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	min-width: 0;
+}
+.book-card .card-top {
+	display: flex;
+	gap: 10px;
+	flex: 1;
+}
+.book-card .cover {
+	width: 56px;
+	min-width: 56px;
 	height: auto;
+	border-radius: 6px;
+	align-self: flex-start;
 }
-.nav-link {
+.book-card .card-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+}
+/* Badge row */
+.badge-row {
+	display: flex;
+	gap: 3px;
+	margin-bottom: 5px;
+	align-self: flex-start;
+}
+/* Rare badge */
+.rare-badge {
+	font-size: 0.55rem;
+	font-weight: 700;
+	background-color: #a8c8f0;
+	color: #1a3d6d;
+	border-radius: 10px;
+	padding: 1px 5px;
+	white-space: nowrap;
+}
+/* New badge */
+.new-badge {
+	font-size: 0.55rem;
+	font-weight: 700;
+	background-color: #8edba6;
+	color: #0b5226;
+	border-radius: 10px;
+	padding: 1px 5px;
+	white-space: nowrap;
+}
+.book-card .card-info h6 {
+	font-size: 0.82rem;
+	margin-bottom: 1px;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	overflow-wrap: break-word;
+	word-break: break-word;
+}
+.book-card .card-info .card-author {
+	font-size: 0.75rem;
+	color: #555;
+	margin-bottom: 4px;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	overflow-wrap: break-word;
+	word-break: break-word;
+}
+.book-card .card-info .card-meta {
+	font-size: 0.7rem;
+	color: #6c757d;
+	margin-bottom: 0;
+}
+.book-card .card-btn {
+	display: block;
+	text-align: center;
+	margin-top: 8px;
+	padding: 5px 0;
+	border-radius: 8px;
+	font-size: 0.8rem;
+	font-weight: 500;
+	text-decoration: none;
+}
+/* Full-width items inside grid (review prompt, empty states) */
+.book-grid .grid-full-width {
+	grid-column: 1 / -1;
+}
+.form-control {
+	border-radius: 8px;
+}
+.btn {
+	border-radius: 8px;
+}
+#autodetect_goodreads,
+#wizard_autodetect {
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	border-color: var(--bs-border-color);
+	color: #6c757d;
+}
+#autodetect_goodreads:hover,
+#wizard_autodetect:hover {
+	background-color: #f8f9fa;
+	border-color: var(--bs-border-color);
+	color: #212529;
+}
+.input-group .form-control {
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+}
+/* Error highlight for input groups (covers input + appended button).
+   !important needed to override ID-level selectors on #goodreadsID / #autodetect_goodreads. */
+.input-group.has-error .form-control,
+.input-group.has-error .btn {
+	border-color: #dc3545 !important;
+}
+.progress {
+	border-radius: 8px;
+}
+.alert {
+	border-radius: 10px;
+}
+/* Bottom nav bar */
+#pills-tab .nav-link {
 	background-color: white !important;
 	color: lightgray;
 	padding-bottom: 0;
 }
-.nav-link.active {
+#pills-tab .nav-link.active {
 	color: black !important;
 }
-.nav-link.active:after {
+#pills-tab .nav-link.active:after {
 	border-bottom: 5px solid #2196f3;
 	content: "";
 	display: block;
 	margin-left: 25%;
 	width: 50%;
 }
+/* Filter toggle (segmented control) */
+.filter-toggle {
+	display: inline-flex;
+	align-items: center;
+	background-color: #e9ecef;
+	border-radius: 20px;
+	padding: 2px;
+	flex-shrink: 0;
+}
+.filter-toggle-btn {
+	border: none;
+	background: transparent;
+	color: #6c757d;
+	font-size: 0.75rem;
+	font-weight: 500;
+	padding: 3px 10px;
+	border-radius: 20px;
+	cursor: pointer;
+	transition: all 0.2s ease;
+	white-space: nowrap;
+	line-height: 1.2;
+}
+.filter-toggle-btn.active {
+	background-color: white;
+	color: #212529;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
 #refresh_button {
 	color: lightgray;
+	cursor: pointer;
 	-webkit-transition: all 0.1s ease-in;
 	transition: all 0.1s ease-in;
 }
@@ -87,16 +249,76 @@ input:checked + .slider:before {
 	border-radius: 50%;
 }
 
-/* Error messages & help */
-#goodreads_fail,
-#overdrive_fail {
+/* Error banners (Goodreads / OverDrive settings errors) */
+.error-banner {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	background-color: #fff5f5;
+	border: 1px solid #f5c2c7;
+	border-radius: 8px;
+	padding: 8px 12px;
+}
+.error-banner-text {
+	font-size: 0.8rem;
+	color: #842029;
+}
+.error-banner-text .fa {
+	margin-right: 4px;
+}
+.error-banner-link {
+	font-size: 0.78rem;
+	color: #842029;
+	text-decoration: underline;
+	font-weight: normal;
+}
+.error-banner-link:hover {
+	color: #4d1318;
+}
+.error-banner-help {
+	font-size: 0.75rem;
+	color: #842029;
+	text-decoration: underline;
+}
+.error-banner-help:hover {
+	color: #4d1318;
+}
+.error-banner-btn {
+	flex-shrink: 0;
+	font-size: 0.75rem;
+	padding: 2px 10px;
+	border-radius: 6px;
+}
+.error-banner-detail {
+	font-size: 0.75rem;
+	margin-top: 4px;
+	font-style: italic;
+}
+/* Empty state (no WiFi, no titles) */
+.empty-state {
 	display: flex;
 	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	text-align: center;
+	height: 100%;
 }
-#goodreads_fail > hr,
-#overdrive_fail > hr {
-	width: 100%;
-	margin-top: 8px !important;
+.empty-state-icon {
+	font-size: 2rem;
+	color: #adb5bd;
+	margin-bottom: 10px;
+}
+.empty-state-title {
+	font-size: 1rem;
+	font-weight: 600;
+	color: #212529;
+	margin-bottom: 4px;
+}
+.empty-state-body {
+	font-size: 0.82rem;
+	color: #6c757d;
+	margin-bottom: 0;
 }
 .help {
 	background-color: darkgray;
@@ -108,6 +330,7 @@ input:checked + .slider:before {
 	display: inline-block;
 	text-align: center;
 	line-height: 18px;
+	text-decoration: none;
 }
 .help:hover {
 	background-color: rgb(92, 92, 92);
@@ -120,11 +343,291 @@ input:checked + .slider:before {
 	text-decoration: underline;
 	transition: 250ms;
 }
-.helpLink.red {
-	color: #721c24;
-	margin-left: auto;
-	font-weight: normal;
+/* Search + filter row */
+#search-filter-row {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	background: white;
+	padding-top: 12px;
+	padding-bottom: 12px;
 }
-.helpLink.red:hover {
-	color: #411014;
+/* Search icon inside field */
+.search-icon {
+	position: absolute;
+	left: 10px;
+	top: 50%;
+	transform: translateY(-50%);
+	z-index: 2;
+	pointer-events: none;
+	font-size: 0.7rem;
+	color: #adb5bd;
+}
+#search_input {
+	padding-left: 28px;
+	padding-right: 28px;
+	border-radius: 20px;
+	font-size: 0.8rem;
+	height: auto;
+	min-height: 0 !important;
+	padding-top: 3px !important;
+	padding-bottom: 3px !important;
+	line-height: 1.2;
+}
+#search_input:focus {
+	box-shadow: none;
+	border-color: var(--bs-border-color);
+	outline: none;
+}
+.search-spinner-wrap {
+	position: absolute;
+	right: 10px;
+	top: 50%;
+	transform: translateY(-50%);
+	z-index: 2;
+	pointer-events: none;
+}
+/* Section headers, empty states, and spinners span full width in grid */
+#available_now > .search-section-header,
+#available_soon > .search-section-header,
+#search_shelf_empty,
+#search_overdrive_empty,
+.search-bottom-spinner {
+	grid-column: 1 / -1;
+}
+/* Search section headers */
+.search-section-header {
+	font-size: 0.8rem;
+	color: #6c757d;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	margin-top: 8px;
+	margin-bottom: 6px;
+	padding-bottom: 4px;
+	border-bottom: 1px solid #dee2e6;
+}
+.search-spinner {
+	display: inline-block;
+	width: 14px;
+	height: 14px;
+	border: 2px solid #dee2e6;
+	border-top-color: #6c757d;
+	border-radius: 50%;
+	animation: spin 0.6s linear infinite;
+}
+@keyframes spin {
+	to { transform: rotate(360deg); }
+}
+/* Shelf toggle list */
+.shelf-toggle-list {
+	display: flex;
+	flex-direction: column;
+}
+.shelf-toggle-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 0;
+	font-size: 0.85rem;
+	color: #212529;
+}
+.shelf-toggle-item .switch {
+	flex-shrink: 0;
+}
+.shelf-toggle-item .switch input:disabled + .slider {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+/* When only one shelf is checked, dim its toggle to show it can't be unchecked */
+#shelf_list.sole-checked .shelf-toggle-item:has(input:checked) .slider {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+/* Remove focus ring from all form controls and buttons */
+.form-control:focus,
+.btn:focus,
+.nav-link:focus {
+	box-shadow: none !important;
+	outline: none !important;
+}
+/* Settings sub-tabs */
+#settings-tabs .nav-link {
+	color: #212529;
+}
+#settings-tabs .nav-link.active {
+	color: #212529;
+	border-bottom-color: #2196f3;
+}
+#settings-tabs .nav-link .fa-cog {
+	font-size: 0.85em;
+	color: #6c757d;
+	margin-right: 2px;
+}
+#settings-tabs .nav-link .fa-star {
+	font-size: 0.85em;
+	color: #2196f3;
+	margin-right: 2px;
+}
+/* Pro upsell card */
+.pro-card {
+	background: linear-gradient(135deg, #f8f9fa 0%, #eef3fb 100%);
+	border: 1px solid #d6e4f0;
+	border-radius: 12px;
+	padding: 0 18px;
+}
+.pro-card-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	margin-bottom: 10px;
+}
+.pro-price {
+	text-align: right;
+}
+.pro-price-amount {
+	font-size: 1.3rem;
+	font-weight: 700;
+	color: #212529;
+}
+.pro-price-period {
+	font-size: 0.8rem;
+	color: #6c757d;
+}
+.pro-feature-list {
+	list-style: none;
+	padding: 0;
+	margin: 0 0 14px 0;
+}
+.pro-feature-list li {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 7px 0;
+	border-bottom: 1px solid #e9ecef;
+}
+.pro-feature-list li:last-child {
+	border-bottom: none;
+}
+.pro-feature-list li > i {
+	color: #2196f3;
+	font-size: 0.9rem;
+	margin-top: 3px;
+	width: 16px;
+	text-align: center;
+	flex-shrink: 0;
+}
+.pro-feature-list li strong {
+	display: block;
+	font-size: 0.82rem;
+	margin-bottom: 0;
+}
+.pro-feature-list li span {
+	font-size: 0.75rem;
+	color: #6c757d;
+	line-height: 1.25;
+}
+.pro-footer-note {
+	text-align: center;
+	font-size: 0.72rem;
+	color: #8c939a;
+	margin: 6px 0 0 0;
+}
+.pro-footer-note + .pro-footer-note {
+	margin-top: 2px;
+}
+.pro-restore-link {
+	cursor: pointer;
+}
+.pro-restore-link:hover {
+	text-decoration: underline;
+}
+.pro-status-card {
+	background-color: #f0faf3;
+	border: 1px solid #c3e6cb;
+	border-radius: 12px;
+	padding: 16px;
+}
+/* Pro gating badges */
+.shelf-pro-badge {
+	margin-left: 12px;
+	font-size: 0.65rem;
+	font-weight: 600;
+	color: #2196f3;
+	cursor: pointer;
+	white-space: nowrap;
+}
+#shelf_list .shelf-pro-badge {
+	margin-left: 4px;
+}
+.shelf-pro-badge .fa-lock {
+	margin-right: 2px;
+}
+/* Skeleton loading placeholder */
+@keyframes skel-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}
+.skel-el {
+	background-color: #dee2e6;
+	animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-card {
+	background-color: #e9ecef;
+}
+.skel-search-row {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	background: white;
+	padding-top: 12px;
+	padding-bottom: 12px;
+}
+.skel-search-bar {
+	height: 26px;
+	border-radius: 20px;
+}
+.skel-section-label {
+	width: 45%;
+	height: 12px;
+	margin-bottom: 10px;
+	border-radius: 4px;
+}
+.skel-cover {
+	width: 56px;
+	min-width: 56px;
+	height: 80px;
+	border-radius: 6px;
+}
+.skel-btn {
+	height: 30px;
+	border-radius: 8px;
+	margin-top: 8px;
+}
+#add_library_btn:disabled {
+	opacity: 0.65;
+	cursor: not-allowed;
+	pointer-events: auto;
+}
+/* OverDrive library row: no special border on trash button */
+#library-rows .input-group .btn {
+	border-color: var(--bs-border-color);
+}
+/* Cancel scan button */
+.cancel-scan-btn {
+	position: absolute;
+	top: 10px;
+	right: 0;
+	z-index: 10;
+	background: none;
+	border: none;
+	color: #adb5bd;
+	font-size: 2.2rem;
+	font-weight: 400;
+	padding: 4px 8px;
+	line-height: 1;
+	cursor: pointer;
+	transition: color 0.15s ease;
+}
+.cancel-scan-btn:hover {
+	color: #212529;
 }

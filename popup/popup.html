@@ -7,15 +7,24 @@
 		<link href="../bootstrap/bootstrap.min.css" rel="stylesheet" />
 		<link href="popup.css" rel="stylesheet" />
 	</head>
-	<body class="d-flex flex-column">
+	<body class="d-flex flex-column full-height">
 		<!-- Header Bar -->
-		<h3 class="p-2 text-center border-bottom mb-0">
-			Library Scan
-			<span id="available_count" class="badge badge-primary d-none"></span>
-		</h3>
+		<div class="d-flex align-items-center justify-content-between ps-3 pe-3 border-bottom" style="padding-top: 1rem; padding-bottom: 1rem;">
+			<div class="d-flex align-items-center">
+				<img src="../icons/icon48.png" alt="Library Scan logo" style="height: 1.4em;" />
+				<h3 class="mb-0 ms-2" style="line-height: 1;">Library Scan<span id="pro_header_badge" class="d-none"> Pro</span></h3>
+				<span id="available_count" class="badge text-bg-primary d-none ms-2" style="font-size: 0.7rem;"></span>
+			</div>
+			<div id="header_refresh" class="d-none d-flex align-items-center">
+				<span class="text-muted me-2" style="font-size: 0.8rem;" id="time_since_refresh"></span>
+				<i id="refresh_button" class="fa fa-refresh m-0 p-0" aria-hidden="true"></i>
+			</div>
+			<!-- Wizard step dots (shown during onboarding) -->
+			<div id="wizard-steps" class="wizard-steps d-none"></div>
+		</div>
 		<!-- Active View -->
 		<div
-			class="tab-content flex-grow-1 overflow-auto pl-3 pr-3"
+			class="tab-content flex-grow-1 overflow-auto ps-3 pe-3"
 			id="pills-tabContent"
 		>
 			<!-- Library Tab -->
@@ -26,33 +35,28 @@
 				aria-labelledby="pills-home-tab"
 			>
 				<!-- Library: normal view -->
-				<div id="home_normal">
-					<!-- Refresh Data Bar -->
-					<div class="d-flex justify-content-center align-items-center pt-2">
-						<div class="mr-1"><p class="mb-0">Last Refreshed:</p></div>
-						<div class="mr-2">
-							<p class="mb-0 font-italic" id="time_since_refresh"></p>
+				<div id="home_normal" class="pb-3 d-none">
+					<!-- Search + Filter Row -->
+					<div class="d-flex align-items-center gap-2" id="search-filter-row">
+						<div class="position-relative flex-grow-1" id="search-bar">
+							<span class="search-icon">
+								<i class="fa fa-search text-muted" aria-hidden="true"></i>
+							</span>
+							<input
+								type="text"
+								class="form-control form-control-sm"
+								id="search_input"
+								placeholder="Search"
+							/>
+							<span class="search-spinner-wrap d-none" id="search_spinner">
+								<span class="search-spinner"></span>
+							</span>
 						</div>
-						<i
-							id="refresh_button"
-							class="fa fa-refresh m-0 p-0"
-							aria-hidden="true"
-						></i>
-					</div>
-					<!-- eBook vs. Audiobook Toggles -->
-					<div
-						class="d-flex justify-content-center align-items-center mt-1 mb-4"
-					>
-						<label class="switch mr-1 mb-0">
-							<input id="ebook_toggle" type="checkbox" checked />
-							<span class="slider round"></span>
-						</label>
-						<p class="mb-0">eBooks</p>
-						<label class="switch ml-4 mr-1 mb-0">
-							<input id="audiobook_toggle" type="checkbox" checked />
-							<span class="slider round"></span>
-						</label>
-						<p class="mb-0">Audiobooks</p>
+						<div class="filter-toggle d-none" id="filter-tabs" role="group">
+							<button class="filter-toggle-btn active" id="filter-all-tab" type="button" data-filter="all">All</button>
+							<button class="filter-toggle-btn" id="filter-ebook-tab" type="button" data-filter="eBook">eBooks</button>
+							<button class="filter-toggle-btn" id="filter-audiobook-tab" type="button" data-filter="Audiobook">Audio</button>
+						</div>
 					</div>
 					<!-- Available Books -->
 					<div id="available_now"></div>
@@ -60,7 +64,8 @@
 					<div id="available_soon"></div>
 				</div>
 				<!-- Library: loading data view -->
-				<div id="home_loading" class="d-none h-100">
+				<div id="home_loading" class="d-none h-100" style="position: relative;">
+					<button id="cancel_scan" type="button" class="cancel-scan-btn" aria-label="Cancel scan">&times;</button>
 					<div
 						class="
 							d-flex
@@ -75,13 +80,13 @@
 							style="width: 3rem; height: 3rem"
 							role="status"
 						>
-							<span class="sr-only">Loading...</span>
+							<span class="visually-hidden">Loading...</span>
 						</div>
 						<h3 id="loading_text" class="text-center">
 							Downloading Goodreads Books...
 						</h3>
 						<h4 id="loading_count" class="text-center mt-1 mb-3"></h4>
-						<div class="progress w-75 ml-auto mr-auto">
+						<div class="progress w-75 mx-auto">
 							<div
 								id="loading_bar"
 								class="progress-bar progress-bar-striped progress-bar-animated"
@@ -97,175 +102,354 @@
 							class="mt-5 p-2 text-center text-secondary"
 						>
 							<em>
-								We'll scan the most recent 200 books on your Goodreads To-Read
-								shelf to find titles already available at your local OverDrive
-								library.
+								We'll scan your selected Goodreads shelves to find
+								titles already available at your local OverDrive library.
 							</em>
 						</p>
+					</div>
+				</div>
+			</div>
+			<!-- Library: skeleton placeholder (visible before JS loads) -->
+			<div id="home_skeleton" class="pb-3">
+				<div class="skel-search-row">
+					<div class="skel-el skel-search-bar"></div>
+				</div>
+				<div class="skel-el skel-section-label"></div>
+				<div class="book-grid">
+					<div class="book-card skel-card">
+						<div class="card-top">
+							<div class="skel-el skel-cover"></div>
+							<div class="card-info">
+								<div class="skel-el" style="width:80%;height:11px;border-radius:3px;"></div>
+								<div class="skel-el" style="width:55%;height:9px;border-radius:3px;margin-top:6px;"></div>
+								<div class="skel-el" style="width:40%;height:9px;border-radius:3px;margin-top:6px;"></div>
+							</div>
+						</div>
+						<div class="skel-el skel-btn"></div>
+					</div>
+					<div class="book-card skel-card">
+						<div class="card-top">
+							<div class="skel-el skel-cover"></div>
+							<div class="card-info">
+								<div class="skel-el" style="width:70%;height:11px;border-radius:3px;"></div>
+								<div class="skel-el" style="width:60%;height:9px;border-radius:3px;margin-top:6px;"></div>
+								<div class="skel-el" style="width:35%;height:9px;border-radius:3px;margin-top:6px;"></div>
+							</div>
+						</div>
+						<div class="skel-el skel-btn"></div>
+					</div>
+					<div class="book-card skel-card">
+						<div class="card-top">
+							<div class="skel-el skel-cover"></div>
+							<div class="card-info">
+								<div class="skel-el" style="width:75%;height:11px;border-radius:3px;"></div>
+								<div class="skel-el" style="width:50%;height:9px;border-radius:3px;margin-top:6px;"></div>
+								<div class="skel-el" style="width:45%;height:9px;border-radius:3px;margin-top:6px;"></div>
+							</div>
+						</div>
+						<div class="skel-el skel-btn"></div>
+					</div>
+					<div class="book-card skel-card">
+						<div class="card-top">
+							<div class="skel-el skel-cover"></div>
+							<div class="card-info">
+								<div class="skel-el" style="width:65%;height:11px;border-radius:3px;"></div>
+								<div class="skel-el" style="width:50%;height:9px;border-radius:3px;margin-top:6px;"></div>
+								<div class="skel-el" style="width:40%;height:9px;border-radius:3px;margin-top:6px;"></div>
+							</div>
+						</div>
+						<div class="skel-el skel-btn"></div>
 					</div>
 				</div>
 			</div>
 			<!-- Settings Tab -->
 			<div
 				class="tab-pane fade h-100"
-				id="pills-profile"
+				id="pills-settings"
 				role="tabpanel"
-				aria-labelledby="pills-profile-tab"
+				aria-labelledby="pills-settings-tab"
 			>
-				<!-- Potential Fetch Error Messages -->
-				<div
-					id="goodreads_fail"
-					class="alert alert-danger mt-3 mb-0 d-none"
-					role="alert"
-				>
-					<h4 class="alert-heading mb-0">Sorry...</h4>
-					<hr class="mt-1 mb-2" />
-					<p class="mb-1">
-						We were unable to access your To-Read shelf on Goodreads. Please
-						double check that you've given us the correct User ID and that your
-						<a
-							href="https://www.goodreads.com/user/edit?tab=settings"
-							target="_blank"
-							class="helpLink red"
-						>
-							profile is public.
-						</a>
-					</p>
+			<div class="d-flex flex-column h-100">
+				<!-- Settings sub-tabs -->
+				<ul class="nav nav-underline mt-2" id="settings-tabs" role="tablist">
+					<li class="nav-item" role="presentation">
+						<button class="nav-link active" id="settings-goodreads-tab" data-bs-toggle="tab" data-bs-target="#settings-goodreads" type="button" role="tab" aria-controls="settings-goodreads" aria-selected="true"><i class="fa fa-cog" aria-hidden="true"></i> Goodreads</button>
+					</li>
+					<li class="nav-item" role="presentation">
+						<button class="nav-link" id="settings-overdrive-tab" data-bs-toggle="tab" data-bs-target="#settings-overdrive" type="button" role="tab" aria-controls="settings-overdrive" aria-selected="false"><i class="fa fa-cog" aria-hidden="true"></i> OverDrive</button>
+					</li>
+					<li class="nav-item" role="presentation">
+						<button class="nav-link" id="settings-pro-tab" data-bs-toggle="tab" data-bs-target="#settings-pro" type="button" role="tab" aria-controls="settings-pro" aria-selected="false"><i class="fa fa-star" aria-hidden="true"></i> Library Scan Pro</button>
+					</li>
+				</ul>
+				<div class="tab-content flex-grow-1 overflow-auto" id="settings-tabContent">
+					<!-- Goodreads sub-tab -->
+					<div class="tab-pane fade show active" id="settings-goodreads" role="tabpanel" aria-labelledby="settings-goodreads-tab">
+						<!-- Goodreads Error Message -->
+						<div id="goodreads_fail" class="error-banner mt-3 d-none">
+							<div class="error-banner-text">
+								<i class="fa fa-exclamation-circle"></i>
+								<strong>Unable to access your Goodreads books.</strong> Make sure you're logged in on this browser or that your
+								<a href="https://www.goodreads.com/user/edit?tab=settings" target="_blank" class="error-banner-link">profile is public</a>.
+								(<a href="https://isaacbock.com/library-scan#goodreads" target="_blank" class="error-banner-help">Help</a>)
+							</div>
+							<button type="button" class="btn btn-outline-danger btn-sm error-banner-btn" id="goodreads_retry">Retry</button>
+						</div>
+						<div class="pt-3 pb-3">
+							<label for="goodreadsID" class="form-label">
+								Goodreads Profile URL
+								<a
+									href="https://isaacbock.com/library-scan#goodreads"
+									target="_blank"
+									class="help ms-2 mt-2"
+								>
+									?
+								</a>
+							</label>
+							<div class="input-group">
+								<input
+									type="text"
+									class="form-control"
+									id="goodreadsID"
+									aria-describedby="goodreadsID"
+									placeholder="goodreads.com/user/show/12345678"
+								/>
+								<button
+									type="button"
+									class="btn btn-outline-secondary"
+									id="autodetect_goodreads"
+									title="Auto-detect from Goodreads"
+								>
+									<i class="fa fa-magic" aria-hidden="true"></i>
+								</button>
+							</div>
+							<div class="form-text" id="goodreads_hint">
+								Paste your profile URL, or click <i class="fa fa-magic"></i> to auto-detect.
+							</div>
+							<!-- Shelf picker (populated dynamically) -->
+							<div id="shelf_picker" class="d-none mt-3">
+								<div class="d-flex align-items-center gap-2 mb-1">
+									<label class="form-label mb-0">Goodreads Shelves</label>
+									<button type="button" class="btn btn-sm p-0 border-0" id="refresh_shelves" title="Refresh shelves">
+										<i class="fa fa-refresh"></i>
+									</button>
+								</div>
+								<div id="shelf_list" class="shelf-toggle-list"></div>
+								<div id="shelf_loading" class="d-none">
+									<span class="search-spinner"></span>
+									<small class="text-muted ms-1">Loading shelves...</small>
+								</div>
+								<div id="shelf_empty" class="d-none">
+									<small class="text-muted">No shelves found. Make sure your Goodreads profile is public.</small>
+								</div>
+								<small id="shelf_error" class="text-danger d-none"></small>
+							</div>
+						</div>
+					</div>
+					<!-- OverDrive sub-tab -->
+					<div class="tab-pane fade" id="settings-overdrive" role="tabpanel" aria-labelledby="settings-overdrive-tab">
+						<!-- OverDrive Error Message -->
+						<div id="overdrive_fail" class="error-banner mt-3 d-none">
+							<div class="error-banner-text">
+								<i class="fa fa-exclamation-circle"></i>
+								<strong>Unable to access your OverDrive library.</strong>
+								Please double check your library URL.
+								(<a href="https://isaacbock.com/library-scan#overdrive" target="_blank" class="error-banner-help">Help</a>)
+							</div>
+							<button type="button" class="btn btn-outline-danger btn-sm error-banner-btn" id="overdrive_retry">Retry</button>
+						</div>
+						<div class="pt-3 pb-4">
+							<label class="form-label">
+								OverDrive Libraries
+								<a
+									href="https://isaacbock.com/library-scan#overdrive"
+									target="_blank"
+									class="help ms-2"
+								>
+									?
+								</a>
+							</label>
+							<div id="library-rows"></div>
+							<div class="form-text mt-2">
+								Not sure?
+								<a
+									href="https://www.overdrive.com/libraries"
+									target="_blank"
+									class="helpLink"
+								>
+									Search for your OverDrive library</a>.
+							</div>
+							<div class="d-flex align-items-center mt-3">
+								<button
+									type="button"
+									class="btn btn-outline-secondary btn-sm"
+									id="add_library_btn"
+									title="Add library"
+								>
+									+ Add Library
+								</button>
+								<span id="add_library_pro_badge" class="shelf-pro-badge d-none"><i class="fa fa-lock"></i> Pro</span>
+							</div>
+						</div>
+					</div>
+					<!-- Pro sub-tab -->
+					<div class="tab-pane fade" id="settings-pro" role="tabpanel" aria-labelledby="settings-pro-tab">
+						<!-- Shown when user is NOT pro -->
+						<div id="pro_upsell" class="pt-2 pb-2 ps-2 pe-2">
+								<ul class="pro-feature-list">
+									<li>
+										<i class="fa fa-bell" aria-hidden="true"></i>
+										<div>
+											<strong>Daily auto-scan & notifications</strong>
+											<span>Automatic daily scans find new titles as they become available.</span>
+										</div>
+									</li>
+									<li>
+										<i class="fa fa-list" aria-hidden="true"></i>
+										<div>
+											<strong>Multiple Goodreads shelves</strong>
+											<span>Scan any shelf — not just your to-read list.</span>
+										</div>
+									</li>
+									<li>
+										<i class="fa fa-university" aria-hidden="true"></i>
+										<div>
+											<strong>Multiple OverDrive libraries</strong>
+											<span>Search across all your library cards at once.</span>
+										</div>
+									</li>
+									<li>
+										<i class="fa fa-book" aria-hidden="true"></i>
+										<div>
+											<strong>Unlimited books per scan</strong>
+											<span>Free accounts scan up to 100 books.<br>Pro scans your entire shelf!</span>
+										</div>
+									</li>
+								</ul>
+								<button type="button" class="btn btn-primary w-100" id="pro_upgrade_btn">
+									Upgrade to Pro — $4.99
+								</button>
+								<p class="pro-footer-note">One-time purchase. Powered by Stripe.</p>
+								<p class="pro-footer-note"><span class="pro-restore-link" id="pro_restore_btn">Restore purchase?</span></p>
+						</div>
+						<!-- Shown when user IS pro -->
+						<div id="pro_active" class="d-none pt-2 pb-2 ps-2 pe-2">
+							<ul class="pro-feature-list">
+								<li>
+									<i class="fa fa-check" aria-hidden="true"></i>
+									<div>
+										<strong>Daily auto-scan & notifications</strong>
+										<span>Automatic daily scans find new titles as they become available.</span>
+									</div>
+								</li>
+								<li>
+									<i class="fa fa-check" aria-hidden="true"></i>
+									<div>
+										<strong>Multiple Goodreads shelves</strong>
+										<span>Scan any shelf — not just your to-read list.</span>
+									</div>
+								</li>
+								<li>
+									<i class="fa fa-check" aria-hidden="true"></i>
+									<div>
+										<strong>Multiple OverDrive libraries</strong>
+										<span>Search across all your library cards at once.</span>
+									</div>
+								</li>
+								<li>
+									<i class="fa fa-check" aria-hidden="true"></i>
+									<div>
+										<strong>Unlimited books per scan</strong>
+										<span>Free accounts scan up to 100 books.<br>Pro scans your entire shelf!</span>
+									</div>
+								</li>
+							</ul>
+							<button type="button" class="btn btn-success w-100" id="pro_manage_btn"><i class="fa fa-check" aria-hidden="true"></i> Purchased!</button>
+						</div>
+					</div>
+				</div>
+				<div class="p-3 text-end border-top" id="scan_footer">
+					<button type="button" class="btn btn-primary btn-sm" id="scan_now_btn">Scan now</button>
+				</div>
+			</div>
+			</div>
+		</div>
+		<!-- Wizard Screen (onboarding) -->
+		<div id="wizard-screen" class="d-none overflow-auto ps-3 pe-3">
+			<p class="form-text pt-3 mb-2">Welcome! 👋</p>
+			<div class="pb-2">
+				<label for="wizard_goodreadsID" class="form-label">
+					Goodreads Profile URL
 					<a
 						href="https://isaacbock.com/library-scan#goodreads"
 						target="_blank"
-						class="helpLink red mt-1"
+						class="help ms-2 mt-2"
 					>
-						Need more help?
+						?
 					</a>
+				</label>
+				<div class="input-group">
+					<input
+						type="text"
+						class="form-control"
+						id="wizard_goodreadsID"
+						placeholder="goodreads.com/user/show/12345678"
+					/>
+					<button
+						type="button"
+						class="btn btn-outline-secondary"
+						id="wizard_autodetect"
+						title="Auto-detect from Goodreads"
+					>
+						<i class="fa fa-magic" aria-hidden="true"></i>
+					</button>
 				</div>
-				<div
-					id="overdrive_fail"
-					class="alert alert-danger mt-3 mb-0 d-none"
-					role="alert"
-				>
-					<h4 class="alert-heading mb-0">Sorry...</h4>
-					<hr class="mt-1 mb-2" />
-					<p class="mb-1">
-						We were unable to access your OverDrive library & search for
-						available titles. Please double check that you've given us the
-						correct OverDrive library URL, which should look like:
-					</p>
-					<small><em>https://YOUR-LIBRARY-CODE.overdrive.com</em></small>
+				<div class="form-text" id="wizard_goodreads_hint">
+					Paste your profile URL, or click <i class="fa fa-magic"></i> to auto-detect.
+				</div>
+			</div>
+			<div class="pt-2 pb-2">
+				<label for="wizard_overdriveURL" class="form-label">
+					OverDrive Library URL
 					<a
 						href="https://isaacbock.com/library-scan#overdrive"
 						target="_blank"
-						class="helpLink red mt-2"
+						class="help ms-2"
 					>
-						Need more help?
+						?
 					</a>
+				</label>
+				<input
+					type="text"
+					class="form-control"
+					id="wizard_overdriveURL"
+					placeholder="xxxx.overdrive.com"
+				/>
+				<div class="form-text mt-2">
+					Not sure?
+					<a
+						href="https://www.overdrive.com/libraries"
+						target="_blank"
+						class="helpLink"
+					>
+						Search for your OverDrive library</a>.
 				</div>
-				<!-- eBook vs. Audiobook Toggles -->
-				<p class="mb-0 pt-4">Show me...</p>
-				<div class="d-flex justify-content-start align-items-center pt-2 pb-3">
-					<label class="switch mr-1 mb-0">
-						<input id="ebook_toggle_settings" type="checkbox" checked />
-						<span class="slider round"></span>
-					</label>
-					<p class="mb-0">eBooks</p>
-					<label class="switch ml-4 mr-1 mb-0">
-						<input id="audiobook_toggle_settings" type="checkbox" checked />
-						<span class="slider round"></span>
-					</label>
-					<p class="mb-0">Audiobooks</p>
-				</div>
-				<!-- User Info Form -->
-				<form id="userData" class="pb-4">
-					<div class="form-group">
-						<label for="goodreadsID">
-							Goodreads User ID
-							<a
-								href="https://isaacbock.com/library-scan#goodreads"
-								target="_blank"
-								class="help ml-2 mt-2"
-							>
-								?
-							</a>
-						</label>
-						<input
-							type="number"
-							class="form-control"
-							id="goodreadsID"
-							aria-describedby="goodreadsID"
-							placeholder="12345678"
-							required
-						/>
-						<small id="goodreadsIDHelp" class="form-text text-muted">
-							You can find your User ID number in the URL of your profile page:
-						</small>
-						<small class="form-text text-muted">
-							<em>
-								goodreads.com/user/show/
-								<strong>12345678</strong>
-								-yourname
-							</em>
-						</small>
-						<label for="overdriveURL" class="mt-4">
-							Local Library OverDrive URL
-							<a
-								href="https://isaacbock.com/library-scan#overdrive"
-								target="_blank"
-								class="help ml-2"
-							>
-								?
-							</a>
-						</label>
-						<input
-							type="url"
-							class="form-control"
-							id="overdriveURL"
-							aria-describedby="overdriveURL"
-							placeholder="ex) https://xxxx.overdrive.com"
-							required
-						/>
-						<small id="overdriveIDHelp" class="form-text text-muted">
-							Not sure?
-							<a
-								href="https://www.overdrive.com/libraries"
-								target="_blank"
-								class="helpLink"
-							>
-								Search for your OverDrive library
-							</a>
-							.
-						</small>
-					</div>
-					<div class="d-flex justify-content-end align-items-center mt-4">
-						<a
-							id="help"
-							href="https://isaacbock.com/library-scan#start"
-							target="_blank"
-							class="btn btn-outline-secondary"
-						>
-							Tutorial
-						</a>
-						<button
-							id="userDataSubmit"
-							type="submit"
-							class="btn btn-primary ml-3"
-						>
-							Submit
-						</button>
-					</div>
-				</form>
+			</div>
+			<div class="d-flex justify-content-end pt-2 pb-3">
+				<button id="wizard-next" class="btn btn-primary" type="button" disabled>Start Scanning</button>
 			</div>
 		</div>
-		<!-- Bottom Nav Bar -->
+		<!-- Bottom Nav Bar (normal mode) -->
 		<ul
 			class="nav nav-pills nav-justified border-top d-none"
 			id="pills-tab"
 			role="tablist"
 		>
-			<li class="nav-item">
+			<li class="nav-item" role="presentation">
 				<a
 					class="nav-link active"
 					id="pills-home-tab"
-					data-toggle="pill"
+					data-bs-toggle="pill"
 					href="#pills-home"
 					role="tab"
 					aria-controls="pills-home"
@@ -274,14 +458,14 @@
 					<i class="fa fa-book fa-lg" aria-hidden="true"></i>
 				</a>
 			</li>
-			<li class="nav-item">
+			<li class="nav-item" role="presentation">
 				<a
 					class="nav-link"
-					id="pills-profile-tab"
-					data-toggle="pill"
-					href="#pills-profile"
+					id="pills-settings-tab"
+					data-bs-toggle="pill"
+					href="#pills-settings"
 					role="tab"
-					aria-controls="pills-profile"
+					aria-controls="pills-settings"
 					aria-selected="false"
 				>
 					<i class="fa fa-cog fa-lg" aria-hidden="true"></i>
@@ -289,9 +473,11 @@
 			</li>
 		</ul>
 		<!-- JS -->
-		<script src="../bootstrap/jquery.min.js"></script>
 		<script src="../bootstrap/bootstrap.min.js"></script>
 		<script src="../bootstrap/fontawesome.min.js"></script>
+		<script src="../ExtPay.js"></script>
+		<script src="../background/api_keys.js"></script>
+		<script src="../analytics.js"></script>
 		<script src="popup.js"></script>
 	</body>
 </html>

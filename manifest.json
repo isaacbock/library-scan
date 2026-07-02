@@ -3,7 +3,7 @@
 	"name": "Library Scan: OverDrive (Libby) + Goodreads",
 	"short_name": "Library Scan",
 	"description": "Scan your OverDrive (Libby) libraries for available eBooks & audiobooks from your Goodreads shelves.",
-	"version": "2.0.0",
+	"version": "2.0.1",
 	"author": "Isaac B.",
 	"icons": {
 		"16": "icons/icon16.png",

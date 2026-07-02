@@ -42,13 +42,10 @@ https://isaacbock.com/library-scan
 
 ## Changelog
 
-- Version 2.0.0 (04/02/26)
-  - Manifest V3 migration (background service worker)
-  - Redesigned popup: onboarding wizard, book cover cards, search, & media-type filters
-  - Library Scan Pro: multiple OverDrive libraries, any Goodreads shelves, unlimited books per scan, & daily auto-scans with new-book notifications
-  - Goodreads profile auto-detection & shelf picker
-  - Upgraded to Bootstrap 5, removed jQuery
-  - Google Analytics 4 usage analytics (Measurement Protocol)
+- Version 2.0.0 (04/01/26)
+  - Introducing Library Scan Pro! Daily auto-scans with desktop notifications, multiple OverDrive/Libby libraries, multiple Goodreads shelves, and unlimited books per scan
+  - Completely redesigned interface with guided setup wizard & profile auto-detection
+  - Search your results & OverDrive/Libby libraries by title and author
 - Version 1.0.3 (09/12/21)
   - Bug fix: Only refresh while online
 - Version 1.0.2 (05/22/21)

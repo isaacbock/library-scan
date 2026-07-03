@@ -1,9 +1,19 @@
 // ExtensionPay setup
 importScripts('../ExtPay.js');
 importScripts('api_keys.js');
+importScripts('../analytics-geo.js');
 importScripts('../analytics.js');
 const extpay = ExtPay('library-scan');
 extpay.startBackground();
+
+// Catch-all error telemetry — a spike in extension_error is the "something
+// unexpected broke" alarm (throttled inside Analytics).
+self.addEventListener("error", function (e) {
+	Analytics.trackError("background", e.message || String(e.error || "unknown"));
+});
+self.addEventListener("unhandledrejection", function (e) {
+	Analytics.trackError("background", (e.reason && e.reason.message) || String(e.reason || "unknown"));
+});
 
 // Cache paid status the moment ExtPay confirms payment. The background poll
 // (ExtPay's poll_user_paid) runs even while the popup is closed during the
@@ -11,6 +21,7 @@ extpay.startBackground();
 // the popup then reacts to the isPro storage change and updates live.
 extpay.onPaid.addListener(function () {
 	chrome.storage.local.set({ isPro: true });
+	Analytics.trackPurchase();
 });
 
 /**
@@ -56,6 +67,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Open popup when notification is clicked
 chrome.notifications.onClicked.addListener(function (notificationId) {
 	if (notificationId === "library-scan-new-books") {
+		Analytics.trackNotificationClicked();
 		// openPopup() requires an active user gesture in most Chrome versions
 		// and rejects otherwise — guard so the click handler never throws.
 		try {
@@ -120,6 +132,12 @@ chrome.runtime.onInstalled.addListener(function (details) {
 // In-memory scanning lock (avoids async storage race condition)
 let isScanningLocal = false;
 
+/**
+ * @type {{id: string, startedAt: number}|null} Analytics metadata for the
+ * current scan — the shared scan_id joins scan_started to its outcome events.
+ */
+let currentScanMeta = null;
+
 // Receive messages from popup.js (front-end) and respond with data
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	if (request.msg === "goodreads") {
@@ -136,6 +154,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	} else if (request.msg === "elapsedTime") {
 		getElapsedTime();
 	} else if (request.msg === "cancelScan") {
+		Analytics.trackScanCancelled(currentScanMeta ? currentScanMeta.id : "unknown");
 		currentScanId++;
 		isScanningLocal = false;
 		chrome.storage.session.set({ currently_scanning: false });
@@ -337,6 +356,11 @@ function refresh(goodreadsID, overdriveURLs, shelves, source) {
 	// Invalidate any in-flight scan and capture this scan's ID
 	const myScanId = ++currentScanId;
 
+	// Analytics metadata: scan_id joins this scan's events; startedAt feeds
+	// the duration on completion.
+	const scanMeta = { id: "scan_" + Date.now(), startedAt: Date.now() };
+	currentScanMeta = scanMeta;
+
 	// Show scanning badge immediately so the UI feels responsive
 	chrome.action.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
 	chrome.action.setBadgeTextColor({ color: [255, 255, 255, 255] });
@@ -351,7 +375,7 @@ function refresh(goodreadsID, overdriveURLs, shelves, source) {
 		}, 15000)
 			.then((response) => {
 				if (myScanId !== currentScanId) return;
-				queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source);
+				queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source, scanMeta);
 			})
 			.catch(function (err) {
 				console.log("Could not connect to Goodreads. No internet connection.");
@@ -375,8 +399,9 @@ function refresh(goodreadsID, overdriveURLs, shelves, source) {
  * @param {string[]} [shelves]     Shelves to scan (defaults to saved selection or ["to-read"])
  * @param {number}   myScanId     Scan generation ID — bail if it no longer matches currentScanId
  * @param {string}   [source]     Scan trigger source ("manual" or "auto")
+ * @param {{id: string, startedAt: number}} scanMeta  Analytics scan metadata
  */
-async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source) {
+async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source, scanMeta) {
 	isScanningLocal = true;
 	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
 
@@ -416,7 +441,7 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		overdriveURLs = overdriveURLs.slice(0, 1);
 	}
 
-	Analytics.trackScanStarted(source || "unknown", shelves.length, overdriveURLs.length);
+	Analytics.trackScanStarted(source || "unknown", shelves.length, overdriveURLs.length, scanMeta.id, isPro);
 
 	// Update Loading view carousel messages every 10 seconds
 	let carousel_messages = [
@@ -509,14 +534,14 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		console.log("Goodreads shelves (" + shelves.join(", ") + "): " + ToRead.length + " books total");
 		console.log(ToRead);
 
-		Analytics.trackScanCompleted(ToRead.length, overdriveURLs.length, shelves.length);
+		Analytics.trackGoodreadsFetchCompleted(ToRead.length, overdriveURLs.length, shelves.length, scanMeta.id);
 
 		if (ToRead.length === 0) {
 			throw new Error("No books found on selected shelves");
 		}
 
 		// Query OverDrive for these titles
-		queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID);
+		queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scanMeta);
 
 		// Send initial progress to popup
 		chrome.runtime.sendMessage({
@@ -539,7 +564,7 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		isScanningLocal = false;
 		chrome.storage.session.set({ currently_scanning: false });
 		clearInterval(carousel_message_timer);
-		Analytics.trackScanFailed('goodreads', err.message);
+		Analytics.trackScanFailed('goodreads', err.message, scanMeta.id);
 		updateBadgeError();
 
 		chrome.storage.local.set({ error: "Goodreads", count: 0 });
@@ -571,8 +596,9 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
  * @param {string}      ToRead[].author     Book's author
  * @param {string[]}    overdriveURLs       URLs of user's OverDrive libraries
  * @param {number}      myScanId            Scan generation ID — bail if it no longer matches currentScanId
+ * @param {{id: string, startedAt: number}} scanMeta  Analytics scan metadata
  */
-async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
+async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scanMeta) {
 	console.log("Query OverDrive (" + overdriveURLs.length + " libraries).");
 
 	// Refresh shelf counts in the background while OverDrive scan runs,
@@ -708,7 +734,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 				chrome.action.setBadgeText({ text: pct + "%" });
 			} catch (err) {
 				console.log("OverDrive fetch Error for " + overdriveURL + ": ", err);
-				Analytics.trackOverdriveLibraryFailed(overdriveURL, err.message);
+				Analytics.trackOverdriveLibraryFailed(overdriveURL, err.message, scanMeta.id, 'network');
 				libraryError = true;
 				failedLibraries.push(overdriveURL);
 				// Skip remaining books for this library
@@ -719,7 +745,9 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		// If the OverDrive data regex never matched for any book, the library URL is likely invalid
 		if (!libraryError && libraryMatchCount === 0 && ToRead.length > 0) {
 			console.log("No OverDrive data found for any book at " + overdriveURL + " — treating as failed library.");
-			Analytics.trackOverdriveLibraryFailed(overdriveURL, "No OverDrive data matched");
+			// error_type "parse" is the OverDrive-format-change canary — GA has
+			// an anomaly alert watching for spikes in this.
+			Analytics.trackOverdriveLibraryFailed(overdriveURL, "No OverDrive data matched", scanMeta.id, 'parse');
 			failedLibraries.push(overdriveURL);
 		}
 	}
@@ -756,7 +784,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		});
 
 		var failedDomains = failedLibraries.map(function (u) { try { return new URL(u).hostname; } catch (e) { return u; } });
-		Analytics.trackOverdriveAllFailed(failedDomains);
+		Analytics.trackOverdriveAllFailed(failedDomains, scanMeta.id);
 		chrome.runtime.sendMessage({ msg: "OverdriveError", failedLibraries: failedLibraries }).catch(() => {});
 	} else {
 		// At least one library succeeded
@@ -814,6 +842,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 						console.error("Notification error:", chrome.runtime.lastError.message);
 					} else {
 						console.log("Notification created:", notificationId);
+						Analytics.trackNotificationShown(newBooks.length, allAvailable.length);
 					}
 				});
 				// Save for re-send if user is currently idle/locked
@@ -888,7 +917,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		);
 		var libraryDomains = overdriveURLs.map(function (u) { try { return new URL(u).hostname; } catch (e) { return u; } });
 		var failedDomains = failedLibraries.map(function (u) { try { return new URL(u).hostname; } catch (e) { return u; } });
-		Analytics.trackOverdriveScanCompleted(available_count, unavailable_count, libraryDomains, failedDomains);
+		Analytics.trackOverdriveScanCompleted(available_count, unavailable_count, libraryDomains, failedDomains, scanMeta.id, Date.now() - scanMeta.startedAt);
 		console.log("OverDrive scan complete.");
 	}
 }
@@ -955,11 +984,12 @@ async function fetchWithTimeout(uri, options = {}, time = 60000) {
 		return response;
 	} catch (error) {
 		clearTimeout(timeout);
+		// No per-request analytics here: a single broken scan produces hundreds
+		// of failed fetches, drowning reports in noise. Failures are tracked in
+		// aggregate by the scan-level events instead.
 		if (error.name === "AbortError") {
-			Analytics.trackTimeout(uri);
 			throw new Error("Response timed out.");
 		}
-		Analytics.trackFetchFailure(error.message);
 		throw new Error(error.message);
 	}
 }

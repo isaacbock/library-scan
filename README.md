@@ -24,7 +24,7 @@ Scan any OverDrive library for available eBooks & audiobooks from your Goodreads
 
 _Not affiliated with Goodreads or OverDrive, Inc. All data accessed and interpreted is available publicly online._
 
-_Google Analytics 4 (via Measurement Protocol) is used to collect anonymous usage statistics to help improve the extension. No personally identifiable information is collected. Your IP address is used by Google for approximate geographic reporting but is not stored._
+_Google Analytics 4 (via Measurement Protocol) is used to collect anonymous usage statistics to help improve the extension. No personally identifiable information or user content (search queries, book titles, Goodreads profiles) is collected. Your IP address is used for approximate geographic reporting but is not stored._
 
 ## Installation
 

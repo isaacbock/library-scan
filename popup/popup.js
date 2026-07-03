@@ -13,6 +13,22 @@ var currentIsPro = false;
 // likely killed mid-scan). Must match STALE_SCAN_MS in background.js.
 var STALE_SCAN_MS = 10 * 60 * 1000;
 
+// Catch-all error telemetry — a spike in extension_error is the "something
+// unexpected broke" alarm (throttled inside Analytics).
+window.addEventListener("error", function (e) {
+	Analytics.trackError("popup", e.message || String(e.error || "unknown"));
+});
+window.addEventListener("unhandledrejection", function (e) {
+	Analytics.trackError("popup", (e.reason && e.reason.message) || String(e.reason || "unknown"));
+});
+
+// Real dwell time, reported on close (keepalive lets the request outlive the
+// popup) — the one event whose engagement_time_msec is genuine.
+var popupOpenedAt = Date.now();
+window.addEventListener("pagehide", function () {
+	Analytics.trackPopupClosed(Date.now() - popupOpenedAt);
+});
+
 // Search state
 var searchDebounceTimer = null;
 var currentSearchController = null;
@@ -166,20 +182,46 @@ document.addEventListener("DOMContentLoaded", function () {
 	document.getElementById("wizard-next").addEventListener("click", wizardComplete);
 
 	// Hide scan footer when Pro settings tab is active
+	var settingsScreens = {
+		"settings-goodreads-tab": "settings_goodreads",
+		"settings-overdrive-tab": "settings_overdrive",
+		"settings-pro-tab": "settings_pro",
+	};
 	document.querySelectorAll("#settings-tabs button").forEach(function (tab) {
 		tab.addEventListener("shown.bs.tab", function () {
 			var footer = document.getElementById("scan_footer");
 			footer.classList.toggle("d-none", tab.id === "settings-pro-tab");
+			if (settingsScreens[tab.id]) {
+				Analytics.trackScreenView(settingsScreens[tab.id]);
+			}
 			if (tab.id === "settings-pro-tab") {
 				Analytics.trackProTabViewed();
 			}
 		});
 	});
 
+	// Track main tab views for flow analysis
+	document.getElementById("pills-home-tab").addEventListener("shown.bs.tab", function () {
+		Analytics.trackScreenView("library");
+	});
+	document.getElementById("pills-settings-tab").addEventListener("shown.bs.tab", function () {
+		var active = document.querySelector("#settings-tabs .nav-link.active");
+		Analytics.trackScreenView((active && settingsScreens[active.id]) || "settings_goodreads");
+	});
+
 	// Seed UI from cached Pro status immediately so the popup opens in the
 	// right state; getUser() below refines it once the network responds.
-	chrome.storage.local.get(["isPro"], function (result) {
+	// popup_opened (the DAU backbone) fires here from cache — never gated on
+	// a network call, so quick check-ins still get counted.
+	chrome.storage.local.get(["isPro", "overdriveURLs", "selectedShelves", "BookAvailability"], function (result) {
 		applyProStatus(!!result.isPro);
+		var bookCount = (result.BookAvailability || []).length;
+		var booksBucket = bookCount === 0 ? "0" : bookCount <= 50 ? "1-50" : bookCount <= 200 ? "51-200" : "200+";
+		Analytics.trackPopupOpened(!!result.isPro, {
+			library_count: (result.overdriveURLs || []).length,
+			shelf_count: (result.selectedShelves || ["to-read"]).length,
+			books_bucket: booksBucket,
+		});
 	});
 
 	// ExtensionPay: check pro status, cache it, and toggle UI
@@ -187,12 +229,10 @@ document.addEventListener("DOMContentLoaded", function () {
 		var isPro = !!user.paid;
 		chrome.storage.local.set({ isPro: isPro });
 		applyProStatus(isPro);
-		Analytics.trackPopupOpened(isPro);
 	}).catch(function () {
 		// Network error — fall back to cached status
 		chrome.storage.local.get(["isPro"], function (result) {
 			applyProStatus(!!result.isPro);
-			Analytics.trackPopupOpened(!!result.isPro);
 		});
 	});
 
@@ -209,6 +249,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
 	// ExtensionPay: restore purchase (login)
 	document.getElementById("pro_restore_btn").addEventListener("click", function () {
+		Analytics.trackProRestoreClicked();
 		extpay.openLoginPage();
 	});
 
@@ -217,6 +258,9 @@ document.addEventListener("DOMContentLoaded", function () {
 		chrome.storage.local.set({ isPro: true });
 		applyProStatus(true);
 		refreshShelfPickerFromStorage();
+		// Whichever context observes the payment first reports it; the
+		// storage guard inside trackPurchase prevents double-counting.
+		Analytics.trackPurchase();
 	});
 
 	// React live to Pro status captured elsewhere — e.g. a payment that
@@ -436,6 +480,7 @@ function autodetectGoodreads(btnId, hintId, inputId) {
 							if (r.detectedGoodreadsID) {
 								applyDetectedID(r.detectedGoodreadsID, btn, hint, input);
 							} else {
+								Analytics.trackAutodetectUsed(btnId === "wizard_autodetect" ? "wizard" : "settings", false);
 								btn.disabled = false;
 								btn.innerHTML = '<i class="fa fa-magic" aria-hidden="true"></i>';
 								hint.textContent = "Please make sure you're signed in to Goodreads on this browser.";
@@ -457,6 +502,7 @@ function autodetectGoodreads(btnId, hintId, inputId) {
  * Apply a detected Goodreads ID to the input field.
  */
 function applyDetectedID(id, btn, hint, input) {
+	Analytics.trackAutodetectUsed(btn.id === "wizard_autodetect" ? "wizard" : "settings", true);
 	btn.disabled = false;
 	btn.innerHTML = '<i class="fa fa-magic" aria-hidden="true"></i>';
 	input.value = goodreadsDisplayURL(id);
@@ -620,6 +666,8 @@ function loadUserDataOnline() {
 				});
 			} else {
 				// New user — show wizard
+				Analytics.trackWizardStarted();
+				Analytics.trackScreenView("wizard");
 				hideSkeleton();
 				document.body.classList.remove("full-height");
 				document.getElementById("wizard-screen").classList.remove("d-none");
@@ -811,6 +859,7 @@ function showTab(tabId) {
  * Display loading screen
  */
 function loadingScreen(request) {
+	Analytics.trackScreenView("loading");
 	hideSkeleton();
 	document.body.classList.add("full-height");
 	document.getElementById("home_normal").classList.add("d-none");
@@ -850,9 +899,11 @@ function loadingScreen(request) {
  *
  * @param {Object}  book            Book data object
  * @param {boolean} isAvailable     Whether book is available for checkout
+ * @param {Set}     [newlyAvailable] URLs newly available since last scan
+ * @param {string}  [clickSource]   Analytics context ("library" | "search")
  * @returns {HTMLElement}           Book card element
  */
-function createBookCard(book, isAvailable, newlyAvailable) {
+function createBookCard(book, isAvailable, newlyAvailable, clickSource) {
 	const card = document.createElement("div");
 	card.className = "book-card";
 
@@ -943,7 +994,7 @@ function createBookCard(book, isAvailable, newlyAvailable) {
 	btn.target = "_blank";
 	btn.textContent = isAvailable ? "Available Now" : "Place Hold";
 	btn.addEventListener('click', function () {
-		Analytics.trackBookClicked(isAvailable ? 'checkout' : 'hold');
+		Analytics.trackBookClicked(isAvailable ? 'checkout' : 'hold', clickSource || 'library', book.type);
 	});
 	card.appendChild(btn);
 
@@ -988,6 +1039,7 @@ function updateMainPage(BookAvailability) {
  * @param {Object[]} BookAvailability All books identified on OverDrive
  */
 function renderBooks(BookAvailability) {
+	Analytics.trackScreenView("library");
 	const availableNow = document.getElementById("available_now");
 	const availableSoon = document.getElementById("available_soon");
 	availableNow.innerHTML = "";
@@ -1044,7 +1096,7 @@ function renderBooks(BookAvailability) {
 			// Add available books in a grid
 			availableNow.classList.add("book-grid");
 			for (let i = 0; i < Available.length; i++) {
-				availableNow.appendChild(createBookCard(Available[i], true, newlyAvailable));
+				availableNow.appendChild(createBookCard(Available[i], true, newlyAvailable, "library"));
 			}
 
 			// If books are available, prompt user to leave a review
@@ -1077,7 +1129,7 @@ function renderBooks(BookAvailability) {
 			// Add hold books in a grid
 			availableSoon.classList.add("book-grid");
 			for (let i = 0; i < Holds.length; i++) {
-				availableSoon.appendChild(createBookCard(Holds[i], false));
+				availableSoon.appendChild(createBookCard(Holds[i], false, null, "library"));
 			}
 		}
 	});
@@ -1190,7 +1242,7 @@ function saveUserData() {
 	document.getElementById("overdrive_fail").classList.add("d-none");
 	document.getElementById("goodreadsID").closest(".input-group").classList.remove("has-error");
 
-	Analytics.trackSettingsUpdated();
+	Analytics.trackSettingsUpdated(overdriveURLs.length, selectedShelves ? selectedShelves.length : 1);
 	reloadData(goodreadsID, overdriveURLs, selectedShelves);
 }
 
@@ -1199,6 +1251,7 @@ function saveUserData() {
  * Preserves cached book data so the user can still browse previous results.
  */
 function goodreadsError() {
+	Analytics.trackScreenView("settings_goodreads");
 	document.getElementById("goodreads_fail").classList.remove("d-none");
 	document.getElementById("overdrive_fail").classList.add("d-none");
 	document.getElementById("goodreadsID").closest(".input-group").classList.add("has-error");
@@ -1299,9 +1352,10 @@ function onSearchInput() {
 		renderSearchResults(query, allBooks, null);
 	});
 
-	// Debounce the OverDrive live search (500ms to avoid rate limiting)
+	// Debounce the OverDrive live search (500ms to avoid rate limiting).
+	// Search analytics fire once per settled query in searchOverdrive, not
+	// per keystroke here.
 	searchDebounceTimer = setTimeout(function () {
-		Analytics.trackSearchUsed(query.length);
 		searchOverdrive(query);
 	}, 500);
 }
@@ -1402,6 +1456,16 @@ function searchOverdrive(query) {
 
 				currentSearchController = null;
 				document.getElementById("search_spinner").classList.add("d-none");
+
+				// Track search shape & outcome only — never the query text
+				var lowerQuery = query.toLowerCase();
+				var localCount = allBooks.filter(function (b) {
+					if (activeFilter !== "all" && b.type !== activeFilter) return false;
+					return b.title.toLowerCase().indexOf(lowerQuery) !== -1 ||
+						b.author.toLowerCase().indexOf(lowerQuery) !== -1;
+				}).length;
+				Analytics.trackSearchPerformed(query.length, localCount, liveBooks.length);
+
 				renderSearchResults(query, allBooks, liveBooks);
 			})
 			.catch(function (err) {
@@ -1474,7 +1538,7 @@ function diffCards(container, books) {
 		var book = books[n];
 		var card = existingCards[book.URL];
 		if (!card) {
-			card = createBookCard(book, book.available);
+			card = createBookCard(book, book.available, null, "search");
 			card.setAttribute("data-url", book.URL);
 		}
 		container.appendChild(card);
@@ -1866,6 +1930,7 @@ function showPartialOverdriveError(failedLibraries) {
 }
 
 function overdriveError(failedLibraries) {
+	Analytics.trackScreenView("settings_overdrive");
 	document.getElementById("goodreads_fail").classList.add("d-none");
 	var failEl = document.getElementById("overdrive_fail");
 	failEl.classList.remove("d-none");

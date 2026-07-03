@@ -42,6 +42,9 @@ https://isaacbock.com/library-scan
 
 ## Changelog
 
+- Version 2.0.1 (07/03/26)
+  - Pro features now unlock instantly after upgrading
+  - Improved scan reliability & performance
 - Version 2.0.0 (04/01/26)
   - Introducing Library Scan Pro! Daily auto-scans with desktop notifications, multiple OverDrive/Libby libraries, multiple Goodreads shelves, and unlimited books per scan
   - Completely redesigned interface with guided setup wizard & profile auto-detection

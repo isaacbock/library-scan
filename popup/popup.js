@@ -13,24 +13,14 @@ var currentIsPro = false;
 // likely killed mid-scan). Must match STALE_SCAN_MS in background.js.
 var STALE_SCAN_MS = 10 * 60 * 1000;
 
-// Catch-all error telemetry — a spike in extension_error is the "something
-// unexpected broke" alarm (throttled inside Analytics).
-window.addEventListener("error", function (e) {
-	Analytics.trackError("popup", e.message || String(e.error || "unknown"));
-});
-window.addEventListener("unhandledrejection", function (e) {
-	Analytics.trackError("popup", (e.reason && e.reason.message) || String(e.reason || "unknown"));
-});
-
-// Real dwell time, reported on close (keepalive lets the request outlive the
-// popup) — the one event whose engagement_time_msec is genuine.
-var popupOpenedAt = Date.now();
-window.addEventListener("pagehide", function () {
-	Analytics.trackPopupClosed(Date.now() - popupOpenedAt);
-});
+// Start PostHog. Clicks, session recording, uncaught errors and the popup
+// closing are captured automatically; each screen is a $pageview sent by
+// Analytics.trackScreenView. Calls made before it's ready are queued.
+Analytics.initPopup();
 
 // Search state
 var searchDebounceTimer = null;
+var searchAnalyticsTimer = null; // reports a search once the user stops typing
 var currentSearchController = null;
 var lastSearchQuery = null;
 var lastSearchLocal = null;
@@ -66,7 +56,6 @@ document.addEventListener("DOMContentLoaded", function () {
 			});
 			btn.classList.add("active");
 			activeFilter = btn.getAttribute("data-filter");
-			Analytics.trackFilterChanged(activeFilter);
 
 			// Persist toggle preferences to local storage
 			var ebookOn = activeFilter === "all" || activeFilter === "eBook";
@@ -109,9 +98,12 @@ document.addEventListener("DOMContentLoaded", function () {
 	document.getElementById("goodreadsID").addEventListener("blur", function () {
 		var parsed = parseGoodreadsID(this.value);
 		if (parsed) {
+			var changed = this.getAttribute("data-last-valid") !== goodreadsDisplayURL(parsed);
 			this.value = goodreadsDisplayURL(parsed);
 			this.setAttribute("data-last-valid", this.value);
-			chrome.storage.local.set({ goodreadsID: parsed });
+			chrome.storage.local.set({ goodreadsID: parsed }, function () {
+				if (changed) trackSettingChange("goodreads_profile");
+			});
 			loadShelvesForUser(parsed);
 		} else {
 			// Restore previous valid value
@@ -146,11 +138,11 @@ document.addEventListener("DOMContentLoaded", function () {
 	// Retry buttons
 	document.getElementById("goodreads_retry").addEventListener("click", function () {
 		document.getElementById("goodreads_fail").classList.add("d-none");
-		reloadData();
+		reloadData(undefined, undefined, undefined, "retry");
 	});
 	document.getElementById("overdrive_retry").addEventListener("click", function () {
 		document.getElementById("overdrive_fail").classList.add("d-none");
-		reloadData();
+		reloadData(undefined, undefined, undefined, "retry");
 	});
 
 	// Wizard: auto-detect
@@ -194,9 +186,6 @@ document.addEventListener("DOMContentLoaded", function () {
 			if (settingsScreens[tab.id]) {
 				Analytics.trackScreenView(settingsScreens[tab.id]);
 			}
-			if (tab.id === "settings-pro-tab") {
-				Analytics.trackProTabViewed();
-			}
 		});
 	});
 
@@ -213,14 +202,18 @@ document.addEventListener("DOMContentLoaded", function () {
 	// right state; getUser() below refines it once the network responds.
 	// popup_opened (the DAU backbone) fires here from cache — never gated on
 	// a network call, so quick check-ins still get counted.
-	chrome.storage.local.get(["isPro", "overdriveURLs", "selectedShelves", "BookAvailability"], function (result) {
+	chrome.storage.local.get(["isPro", "goodreadsID", "overdriveURLs", "selectedShelves", "BookAvailability", "LastRun"], function (result) {
 		applyProStatus(!!result.isPro);
-		var bookCount = (result.BookAvailability || []).length;
-		var booksBucket = bookCount === 0 ? "0" : bookCount <= 50 ? "1-50" : bookCount <= 200 ? "51-200" : "200+";
-		Analytics.trackPopupOpened(!!result.isPro, {
-			library_count: (result.overdriveURLs || []).length,
+		var libraries = result.overdriveURLs || [];
+		var books = result.BookAvailability || [];
+		Analytics.trackPopupOpened({
+			is_pro: !!result.isPro,
+			setup_complete: !!(result.goodreadsID && libraries.length > 0),
+			library_count: libraries.length,
 			shelf_count: (result.selectedShelves || ["to-read"]).length,
-			books_bucket: booksBucket,
+			books_available: books.filter(function (b) { return b.available; }).length,
+			books_total: books.length,
+			last_scan_at: result.LastRun ? new Date(result.LastRun).getTime() : null,
 		});
 	});
 
@@ -229,6 +222,7 @@ document.addEventListener("DOMContentLoaded", function () {
 		var isPro = !!user.paid;
 		chrome.storage.local.set({ isPro: isPro });
 		applyProStatus(isPro);
+		Analytics.linkPaidUser(user);
 	}).catch(function () {
 		// Network error — fall back to cached status
 		chrome.storage.local.get(["isPro"], function (result) {
@@ -238,7 +232,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
 	// ExtensionPay: upgrade button
 	document.getElementById("pro_upgrade_btn").addEventListener("click", function () {
-		Analytics.trackProUpgradeClicked();
 		extpay.openPaymentPage('library-scan');
 	});
 
@@ -249,18 +242,19 @@ document.addEventListener("DOMContentLoaded", function () {
 
 	// ExtensionPay: restore purchase (login)
 	document.getElementById("pro_restore_btn").addEventListener("click", function () {
-		Analytics.trackProRestoreClicked();
 		extpay.openLoginPage();
 	});
 
 	// ExtensionPay: listen for payment completion to update UI immediately
-	extpay.onPaid.addListener(function () {
+	extpay.onPaid.addListener(function (user) {
 		chrome.storage.local.set({ isPro: true });
 		applyProStatus(true);
 		refreshShelfPickerFromStorage();
 		// Whichever context observes the payment first reports it; the
 		// storage guard inside trackPurchase prevents double-counting.
-		Analytics.trackPurchase();
+		Analytics.linkPaidUser(user).then(function () {
+			Analytics.trackPurchase(user);
+		});
 	});
 
 	// React live to Pro status captured elsewhere — e.g. a payment that
@@ -356,8 +350,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 });
 
 function logReload() {
-	Analytics.trackManualRefresh();
-	reloadData();
+	reloadData(undefined, undefined, undefined, "refresh_button");
 }
 
 
@@ -505,9 +498,12 @@ function applyDetectedID(id, btn, hint, input) {
 	Analytics.trackAutodetectUsed(btn.id === "wizard_autodetect" ? "wizard" : "settings", true);
 	btn.disabled = false;
 	btn.innerHTML = '<i class="fa fa-magic" aria-hidden="true"></i>';
+	var changed = input.id === "goodreadsID" && input.getAttribute("data-last-valid") !== goodreadsDisplayURL(id);
 	input.value = goodreadsDisplayURL(id);
 	input.setAttribute("data-last-valid", input.value);
-	chrome.storage.local.set({ goodreadsID: id });
+	chrome.storage.local.set({ goodreadsID: id }, function () {
+		if (changed) trackSettingChange("goodreads_profile");
+	});
 	hint.innerHTML = 'Paste your profile URL, or click <i class="fa fa-magic"></i> to auto-detect.';
 	hint.style.color = "";
 	// Load shelves if this is the settings input
@@ -549,6 +545,7 @@ function checkConnectivity(callback) {
  * Show a full-screen offline empty state — hides all other UI.
  */
 function showOfflineState() {
+	Analytics.trackScreenView("offline");
 	hideSkeleton();
 	document.getElementById("home_normal").classList.add("d-none");
 	document.getElementById("home_loading").classList.add("d-none");
@@ -660,7 +657,7 @@ function loadUserDataOnline() {
 							updateMainPage(BookAvailability);
 							chrome.runtime.sendMessage({ msg: "elapsedTime" });
 						} else {
-							reloadData(goodreadsID, overdriveURLs);
+							reloadData(goodreadsID, overdriveURLs, undefined, "no_results");
 						}
 					}
 				});
@@ -741,7 +738,7 @@ function wizardComplete() {
 	// Start scanning
 	document.body.classList.add("full-height");
 	showTab("pills-home-tab");
-	reloadData(goodreadsID, overdriveURLs);
+	reloadData(goodreadsID, overdriveURLs, undefined, "setup");
 }
 
 /**
@@ -796,8 +793,24 @@ function addLibraryRow(url) {
  */
 function syncLibraryURLs() {
 	var urls = getLibraryURLs();
-	chrome.storage.local.set({ overdriveURLs: urls });
+	chrome.storage.local.get(["overdriveURLs"], function (result) {
+		var changed = JSON.stringify(result.overdriveURLs || []) !== JSON.stringify(urls);
+		chrome.storage.local.set({ overdriveURLs: urls }, function () {
+			if (changed) trackSettingChange("libraries");
+		});
+	});
 	updateLibraryDeleteButtons();
+}
+
+/**
+ * Report a saved settings change, with the library and shelf counts after it.
+ *
+ * @param {string} setting  "goodreads_profile" | "libraries" | "shelves"
+ */
+function trackSettingChange(setting) {
+	chrome.storage.local.get(["overdriveURLs", "selectedShelves"], function (result) {
+		Analytics.trackSettingsChanged(setting, (result.overdriveURLs || []).length, (result.selectedShelves || ["to-read"]).length);
+	});
 }
 
 /**
@@ -994,7 +1007,7 @@ function createBookCard(book, isAvailable, newlyAvailable, clickSource) {
 	btn.target = "_blank";
 	btn.textContent = isAvailable ? "Available Now" : "Place Hold";
 	btn.addEventListener('click', function () {
-		Analytics.trackBookClicked(isAvailable ? 'checkout' : 'hold', clickSource || 'library', book.type);
+		Analytics.trackBookClicked(isAvailable ? 'checkout' : 'hold', clickSource || 'library', book.type, newlyAvailable, book.library || book.URL);
 	});
 	card.appendChild(btn);
 
@@ -1161,8 +1174,10 @@ function renderBooks(BookAvailability) {
  * @param {number} goodreadsID      User ID number of user's Goodreads account
  * @param {string[]} overdriveURLs  URLs of user's OverDrive libraries
  * @param {string[]} [shelves]      Shelves to scan
+ * @param {string}   [trigger]      What started the scan, for analytics: setup,
+ *                                  refresh_button, settings, retry or no_results
  */
-function reloadData(goodreadsID, overdriveURLs, shelves) {
+function reloadData(goodreadsID, overdriveURLs, shelves, trigger) {
 	if (goodreadsID === undefined || overdriveURLs === undefined) {
 		chrome.storage.local.get(
 			["goodreadsID", "overdriveURLs", "selectedShelves"],
@@ -1172,6 +1187,8 @@ function reloadData(goodreadsID, overdriveURLs, shelves) {
 					goodreadsID: result.goodreadsID,
 					overdriveURLs: result.overdriveURLs,
 					shelves: result.selectedShelves,
+					sessionId: Analytics.getSessionId(),
+					trigger: trigger,
 				});
 			}
 		);
@@ -1181,6 +1198,8 @@ function reloadData(goodreadsID, overdriveURLs, shelves) {
 			goodreadsID: goodreadsID,
 			overdriveURLs: overdriveURLs,
 			shelves: shelves,
+			sessionId: Analytics.getSessionId(),
+			trigger: trigger,
 		});
 	}
 
@@ -1242,8 +1261,7 @@ function saveUserData() {
 	document.getElementById("overdrive_fail").classList.add("d-none");
 	document.getElementById("goodreadsID").closest(".input-group").classList.remove("has-error");
 
-	Analytics.trackSettingsUpdated(overdriveURLs.length, selectedShelves ? selectedShelves.length : 1);
-	reloadData(goodreadsID, overdriveURLs, selectedShelves);
+	reloadData(goodreadsID, overdriveURLs, selectedShelves, "settings");
 }
 
 /**
@@ -1322,6 +1340,7 @@ function onSearchInput() {
 
 	// Cancel any pending debounce or in-flight search
 	clearTimeout(searchDebounceTimer);
+	clearTimeout(searchAnalyticsTimer);
 	if (currentSearchController) {
 		currentSearchController.abort();
 		currentSearchController = null;
@@ -1353,8 +1372,8 @@ function onSearchInput() {
 	});
 
 	// Debounce the OverDrive live search (500ms to avoid rate limiting).
-	// Search analytics fire once per settled query in searchOverdrive, not
-	// per keystroke here.
+	// Search analytics fire from searchOverdrive once the query has settled,
+	// not per keystroke here.
 	searchDebounceTimer = setTimeout(function () {
 		searchOverdrive(query);
 	}, 500);
@@ -1428,9 +1447,11 @@ function searchOverdrive(query) {
 				if (!html || signal.aborted) return;
 
 				var liveBooks = [];
+				var liveStatus = "unrecognized";
 				try {
 					var jsonResults = extractOverdriveMediaItems(html);
 					if (jsonResults) {
+						liveStatus = "ok";
 						for (var key in jsonResults) {
 							try {
 								var book = jsonResults[key];
@@ -1457,25 +1478,41 @@ function searchOverdrive(query) {
 				currentSearchController = null;
 				document.getElementById("search_spinner").classList.add("d-none");
 
-				// Track search shape & outcome only — never the query text
-				var lowerQuery = query.toLowerCase();
-				var localCount = allBooks.filter(function (b) {
-					if (activeFilter !== "all" && b.type !== activeFilter) return false;
-					return b.title.toLowerCase().indexOf(lowerQuery) !== -1 ||
-						b.author.toLowerCase().indexOf(lowerQuery) !== -1;
-				}).length;
-				Analytics.trackSearchPerformed(query.length, localCount, liveBooks.length);
-
+				trackSearchWhenSettled(query, allBooks, liveBooks.length, liveStatus);
 				renderSearchResults(query, allBooks, liveBooks);
 			})
 			.catch(function (err) {
 				if (err.name !== "AbortError") {
 					currentSearchController = null;
 					document.getElementById("search_spinner").classList.add("d-none");
+					trackSearchWhenSettled(query, allBooks, 0, "error");
 					renderSearchResults(query, allBooks, []);
 				}
 			});
 	});
+}
+
+/**
+ * Report a search once the user has stopped typing for a moment, so a
+ * search typed with pauses counts once rather than once per pause. Only
+ * the shape and outcome are tracked, never the query text.
+ *
+ * @param {string}   query       Search text
+ * @param {Object[]} allBooks    Saved scan results (for the local match count)
+ * @param {number}   liveCount   Results from the live library search
+ * @param {string}   liveStatus  "ok" | "error" | "unrecognized"
+ */
+function trackSearchWhenSettled(query, allBooks, liveCount, liveStatus) {
+	clearTimeout(searchAnalyticsTimer);
+	searchAnalyticsTimer = setTimeout(function () {
+		var lowerQuery = query.toLowerCase();
+		var localCount = allBooks.filter(function (b) {
+			if (activeFilter !== "all" && b.type !== activeFilter) return false;
+			return b.title.toLowerCase().indexOf(lowerQuery) !== -1 ||
+				b.author.toLowerCase().indexOf(lowerQuery) !== -1;
+		}).length;
+		Analytics.trackSearchPerformed(query.length, localCount, liveCount, liveStatus);
+	}, 1500);
 }
 
 /**
@@ -1842,7 +1879,9 @@ function onShelfToggleChange() {
 
 	// Save updated selection
 	var selected = getSelectedShelves();
-	chrome.storage.local.set({ selectedShelves: selected });
+	chrome.storage.local.set({ selectedShelves: selected }, function () {
+		trackSettingChange("shelves");
+	});
 
 	// Update sole-checked styling
 	var listEl = document.getElementById("shelf_list");

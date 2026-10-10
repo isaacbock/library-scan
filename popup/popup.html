@@ -5,13 +5,15 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Library Scan</title>
 		<link href="../bootstrap/bootstrap.min.css" rel="stylesheet" />
+		<link href="../bootstrap/fontawesome.min.css" rel="stylesheet" />
+		<link href="../bootstrap/fontawesome-subset.css" rel="stylesheet" />
 		<link href="popup.css" rel="stylesheet" />
 	</head>
 	<body class="d-flex flex-column full-height">
 		<!-- Header Bar -->
 		<div class="d-flex align-items-center justify-content-between ps-3 pe-3 border-bottom" style="padding-top: 1rem; padding-bottom: 1rem;">
 			<div class="d-flex align-items-center">
-				<img src="../icons/icon48.png" alt="Library Scan logo" style="height: 1.4em;" />
+				<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAABhGlDQ1BJQ0MgcHJvZmlsZQAAKJF9kT1Iw0AcxV/TSkUqDhYUcQhYnSyKijhqFYpQIdQKrTqYXPoFTRqSFhdHwbXg4Mdi1cHFWVcHV0EQ/ABxcnRSdJES/5cUWsR4cNyPd/ced+8AoV5imhUYBzS9YibjMTGdWRWDrwiiDwGMYUhmljEnSQl4jq97+Ph6F+VZ3uf+HN1q1mKATySeZYZZId4gnt6sGJz3icOsIKvE58SjJl2Q+JHristvnPMOCzwzbKaS88RhYjHfxkobs4KpEU8RR1RNp3wh7bLKeYuzVqqy5j35C0NZfWWZ6zQHEcciliBBhIIqiiihgiitOikWkrQf8/APOH6JXAq5imDkWEAZGmTHD/4Hv7u1cpMTblIoBnS82PbHMBDcBRo12/4+tu3GCeB/Bq70lr9cB2Y+Sa+1tMgR0LMNXFy3NGUPuNwB+p8M2ZQdyU9TyOWA9zP6pgzQewt0rbm9Nfdx+gCkqKvEDXBwCIzkKXvd492d7b39e6bZ3w+L83Kx0VjLnwAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAAuIwAALiMBeKU/dgAAAAd0SU1FB+QHGAcrKCAGE0IAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAEl0lEQVRo3u2ZX0hbVxzHv+ece2/+NKtXI92WGEHrg+s2C0LVMhRxJD4MdWj12dGCUJwPPmwvQl+Esj0IRn0QhL3sRbZV0D45ELH0QRdEuq0rayzEJDpWQjPRm9zcP2cPcdmyRJFhWjvuF+5Dfueec36fk985yfn9AEuWzk41NTWYmJjA06dPoes6TNM8F49hGNjZ2cHU1BTq6uryfCYAUF1djfHxcdba2lqlaVq9LMtXKisrLxJCyHlYWM45f/HixWEikfhJFMUnDx48iI6NjRk7Ozsg7e3tGBkZYQ0NDTe8Xu8XlNK3dF0XAdA8UkIgSRIYYyV11jAMZDIZcM7/3WQKgqCZpvlbPB7//NGjR9/OzMwYZH5+njY2Nt7w+XxT8Xj80uLiIjY2NqCqasHggUAAt27dKhmEYRiYm5vD8vJyQZskSWhqakJPTw+8Xu/zaDT66ebm5jcIhUJeRVEeb29v84GBAS4IAgdQ9AkEAjydTvNSKZ1O80AgcOz8jDHe39/Pw+EwVxTlcSgU8lKPx3ONMXZ5aWkJ9+7dg67rrzreT/yGFhYWsLi4CMbYZY/H0yQoinLFbrcLq6urOefdbjeam5shCELeHujs7MyznbUEQUBnZyccDkeeXdd1rK+vI5FIQNd1rK6uYnBwUEilUu8JoiheNE2TJJPJXIfr169jdnYWTqcTAEBpdj87HI6SbmLGGIaHh3Hz5s08u6IoGBoawv379wEA+/v7ME2TiKJ4QSh2UkqSBFmWcwAvUzabDTabrcAfSZKKvk9f9x/f1x7gVDsyYwLLzw2kzKNOBPBXUrgEgn2d4/vnJsxj+n5QTuGxE3AAm0kTz1I89xegw01RIRGYHAglDUTSR2FEgQ8rGS6wMwIwOLD0h4lfj05YNwXaKihcAFIG8FXSxGGR048AqHcReOzZffZE4ZhLZlHtBGgqo6iQsof8j4ccX+9nB6lm2fHByP8/hCwAC8ACsAAsAAvAArAALAALwAKwAF65/msW+VRXSoEA3WUUyj/uxPYjdAcDPpHpsXfiSvFv195xEtwmNLdybxzNTgnw/gWK2yx7pbRTwMbOEECkwEdvFh/xokDQ9zY71Qo3yhSNcvG2a+UU16y0yl9plEwGyWSyIMXudDoLsmZnLVVVoShKni2VSiGTyRQH0DTtgFLKy8rKcsH68OFDDA4OFuRBOzo6MDo6WtL6QDAYxMrKSoE9FArlPsuyDEop1zTtALu7ux+rqqpOTk5yURSPzc0D4H6/v+T1Ab/ff6IPoijyyclJrqqqure310Pj8fgPuq5vd3V1obe398T0+csomZ00hyAI6OvrQ1dXF3Rd347FYiEhHA7vybJ8x+fzTd+9e/dSS0sL1tfXi8ZcIBAoeX2gt7cXLperoE2SJLS0tKC7uxsej+f3aDR6JxwO75H29nYMDw+zq1ev9lVVVX35OhT5YrHYZ1tbW99NT08bBAB8Ph/Gx8dZW1ubT9O0erfb/W55ebnrnJVZDxKJxM+iKP6ytrYWGxsbM6LRaP6LNTU1CAaDiEQiMAzjXBW6I5EIgsEgamtrYcnSGepP0BFtLqwtWI0AAAAASUVORK5CYII=" alt="Library Scan logo" style="height: 1.4em;" />
 				<h3 class="mb-0 ms-2" style="line-height: 1;">Library Scan<span id="pro_header_badge" class="d-none"> Pro</span></h3>
 				<span id="available_count" class="badge text-bg-primary d-none ms-2" style="font-size: 0.7rem;"></span>
 			</div>
@@ -474,9 +476,11 @@
 		</ul>
 		<!-- JS -->
 		<script src="../bootstrap/bootstrap.min.js"></script>
-		<script src="../bootstrap/fontawesome.min.js"></script>
 		<script src="../ExtPay.js"></script>
 		<script src="../background/api_keys.js"></script>
+		<script src="../posthog/array.no-external.js"></script>
+		<script src="../posthog/posthog-recorder.js"></script>
+		<script src="../posthog/exception-autocapture.js"></script>
 		<script src="../analytics.js"></script>
 		<script src="popup.js"></script>
 	</body>

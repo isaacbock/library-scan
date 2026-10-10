@@ -5,6 +5,196 @@ importScripts('../analytics.js');
 const extpay = ExtPay('library-scan');
 extpay.startBackground();
 
+// Catch-all error telemetry — unexpected background errors go to PostHog's
+// error tracking (each distinct error at most once a day per device).
+self.addEventListener("error", function (e) {
+	Analytics.trackError("background", e.error || e.message);
+});
+self.addEventListener("unhandledrejection", function (e) {
+	Analytics.trackError("background", e.reason);
+});
+
+// Cache paid status the moment ExtPay confirms payment. The background poll
+// (ExtPay's poll_user_paid) runs even while the popup is closed during the
+// payment flow, so this is the reliable source of truth for Pro status —
+// the popup then reacts to the isPro storage change and updates live.
+extpay.onPaid.addListener(async function (user) {
+	chrome.storage.local.set({ isPro: true });
+	user = await waitForPaidEmail(user);
+	// Link the buyer's devices first so the purchase lands on their person
+	await Analytics.linkPaidUser(user);
+	Analytics.trackPurchase(user);
+});
+
+/**
+ * @type {number} Give up on an ExtensionPay status check after this long and
+ * fall back to the cached Pro status, so a slow or unreachable ExtensionPay
+ * server can never hold up a scan.
+ */
+const EXTPAY_TIMEOUT_MS = 5000;
+
+/**
+ * Fetch the ExtensionPay user, rejecting if it takes longer than
+ * EXTPAY_TIMEOUT_MS.
+ *
+ * @returns {Promise<Object>} ExtensionPay user
+ */
+function getExtPayUser() {
+	return Promise.race([
+		extpay.getUser(),
+		new Promise(function (resolve, reject) {
+			setTimeout(function () { reject(new Error("ExtensionPay timed out")); }, EXTPAY_TIMEOUT_MS);
+		}),
+	]);
+}
+
+/**
+ * @type {number[]} Waits between re-asking ExtensionPay for a new buyer's
+ * email (5s, 15s and 30s after payment). Each gap stays well under the 30s
+ * idle limit that would shut down the service worker.
+ */
+const PAID_EMAIL_RETRY_DELAYS_MS = [5000, 10000, 15000];
+
+/**
+ * ExtensionPay can confirm a payment before the buyer's email is attached,
+ * and linking the purchase to the buyer needs that email. Ask again a few
+ * times until it shows up. Waiting before each ask also matters: by then
+ * ExtPay has saved the payment, so asking again doesn't re-fire onPaid.
+ *
+ * @param {Object} user  ExtensionPay user passed to onPaid
+ * @returns {Promise<Object>} The freshest paid user, with an email if one arrived
+ */
+async function waitForPaidEmail(user) {
+	for (const delay of PAID_EMAIL_RETRY_DELAYS_MS) {
+		if (user && user.email) break;
+		await new Promise(function (resolve) { setTimeout(resolve, delay); });
+		try {
+			const fresh = await getExtPayUser();
+			if (fresh && fresh.paid) user = fresh;
+		} catch (e) {
+			// Network error or timeout — try again on the next delay
+		}
+	}
+	return user;
+}
+
+/**
+ * Parse a Goodreads user ID from a profile URL or a bare ID.
+ * Must match parseGoodreadsID in popup.js.
+ *
+ * @param {string} input  e.g. "goodreads.com/user/show/12345678-name"
+ * @returns {string|null} Numeric ID
+ */
+function parseGoodreadsID(input) {
+	if (!input) return null;
+	input = String(input).trim();
+	const urlMatch = input.match(/goodreads\.com\/user\/show\/(\d+)/);
+	if (urlMatch) return urlMatch[1];
+	const numMatch = input.match(/^(\d+)/);
+	if (numMatch) return numMatch[1];
+	return null;
+}
+
+/**
+ * Parse an OverDrive library URL into https://xxx.overdrive.com.
+ * Must match parseOverdriveURL in popup.js.
+ *
+ * @param {string} input  e.g. "https://lapl.overdrive.com/", "lapl"
+ * @returns {string|null} Canonical library URL
+ */
+function parseOverdriveURL(input) {
+	if (!input) return null;
+	input = String(input).trim().replace(/\/+$/, "");
+	const match = input.match(/(?:https?:\/\/)?([\w-]+\.overdrive\.com)/i);
+	if (match) return "https://" + match[1];
+	const codeMatch = input.match(/^([\w-]+)$/);
+	if (codeMatch) return "https://" + codeMatch[1] + ".overdrive.com";
+	return null;
+}
+
+/**
+ * @param {string} url
+ * @returns {string} The URL's hostname, or the input if it isn't a URL
+ */
+function hostOf(url) {
+	try { return new URL(url).hostname; } catch (e) { return String(url || ""); }
+}
+
+/**
+ * Convert settings saved by Library Scan 1.x, which kept a single library
+ * as `overdriveURL` (exactly as typed) and the Goodreads ID as typed. 2.0
+ * switched to an `overdriveURLs` list without converting them, so 1.x users
+ * silently stopped scanning and were sent back to setup. Their old results
+ * are cleared too: they're months out of date, and with no results the
+ * popup runs a fresh scan the next time it opens. Safe to run on every
+ * start — it only acts on unconverted 1.x settings.
+ *
+ * @returns {Promise<boolean>} Whether 1.x settings were converted
+ */
+function migrateLegacySettings() {
+	return new Promise(function (resolve) {
+		chrome.storage.local.get(["overdriveURL", "overdriveURLs", "goodreadsID"], function (result) {
+			const hasLibraries = result.overdriveURLs && result.overdriveURLs.length > 0;
+			const libraryURL = !hasLibraries && parseOverdriveURL(result.overdriveURL);
+			if (!libraryURL) return resolve(false);
+
+			const settings = { overdriveURLs: [libraryURL] };
+			const goodreadsID = parseGoodreadsID(result.goodreadsID);
+			if (goodreadsID) settings.goodreadsID = goodreadsID;
+			chrome.storage.local.remove(
+				["overdriveURL", "BookAvailability", "PreviouslyAvailable", "LastRun", "count", "error"],
+				function () {
+					chrome.storage.local.set(settings, function () { resolve(true); });
+				}
+			);
+		});
+	});
+}
+
+const legacyMigration = migrateLegacySettings();
+
+/**
+ * Snapshot of this install's state, sent with extension_updated.
+ *
+ * @param {boolean} migratedLegacy  1.x settings were just converted
+ * @returns {Promise<Object>}
+ */
+function installState(migratedLegacy) {
+	return new Promise(function (resolve) {
+		chrome.storage.local.get(
+			["goodreadsID", "overdriveURLs", "selectedShelves", "isPro", "LastRun", "BookAvailability", "error"],
+			function (r) {
+				const libraries = r.overdriveURLs || [];
+				resolve({
+					setup_complete: !!(r.goodreadsID && libraries.length > 0),
+					is_pro: !!r.isPro,
+					library_count: libraries.length,
+					shelf_count: (r.selectedShelves || ["to-read"]).length,
+					has_results: !!(r.BookAvailability && r.BookAvailability.length > 0),
+					days_since_last_scan: r.LastRun ? Math.floor((Date.now() - new Date(r.LastRun)) / 86400000) : null,
+					last_scan_error: r.error && r.error !== "None" ? r.error : null,
+					migrated_legacy_settings: migratedLegacy,
+				});
+			}
+		);
+	});
+}
+
+/**
+ * @type {number} A scan is considered stale (e.g. the MV3 service worker was
+ * terminated mid-scan) after this long, so a stuck currently_scanning flag
+ * can't permanently block auto-refresh.
+ */
+const STALE_SCAN_MS = 10 * 60 * 1000;
+
+/**
+ * @type {number} How often the 1-minute alarm re-validates Pro status against
+ * the ExtensionPay API. Payments are caught instantly by onPaid, and scans &
+ * popup opens do their own live checks — this is just a slow safety net for
+ * out-of-band changes (refunds, dashboard edits).
+ */
+const PRO_RECHECK_MS = 6 * 60 * 60 * 1000;
+
 /**
  * @type {number} Maximum RSS pages for free users (100 books per page)
  */
@@ -33,7 +223,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Open popup when notification is clicked
 chrome.notifications.onClicked.addListener(function (notificationId) {
 	if (notificationId === "library-scan-new-books") {
-		chrome.action.openPopup();
+		Analytics.trackNotificationClicked();
+		// openPopup() requires an active user gesture in most Chrome versions
+		// and rejects otherwise — guard so the click handler never throws.
+		try {
+			var opened = chrome.action.openPopup();
+			if (opened && typeof opened.catch === "function") opened.catch(function () {});
+		} catch (e) {}
 		chrome.notifications.clear(notificationId);
 	}
 });
@@ -51,6 +247,7 @@ chrome.idle.onStateChanged.addListener(function (newState) {
 					title: data.title,
 					message: data.message
 				});
+				Analytics.trackNotificationShown(data.newBooks, data.totalBooks, data.scanSource, true);
 				chrome.storage.local.remove("pendingNotification");
 			}
 		});
@@ -82,7 +279,9 @@ chrome.runtime.onInstalled.addListener(function (details) {
 		);
 		Analytics.trackInstall();
 	} else if (details.reason === "update") {
-		Analytics.trackUpdate(chrome.runtime.getManifest().version);
+		legacyMigration.then(installState).then(function (state) {
+			Analytics.trackUpdate(details.previousVersion, state);
+		});
 		chrome.runtime.setUninstallURL(
 			"https://isaacbock.com/library-scan-uninstall"
 		);
@@ -92,11 +291,17 @@ chrome.runtime.onInstalled.addListener(function (details) {
 // In-memory scanning lock (avoids async storage race condition)
 let isScanningLocal = false;
 
+/**
+ * @type {{id: string, startedAt: number}|null} Analytics metadata for the
+ * current scan — the shared scan_id joins scan_started to its outcome events.
+ */
+let currentScanMeta = null;
+
 // Receive messages from popup.js (front-end) and respond with data
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	if (request.msg === "goodreads") {
 		if (!isScanningLocal) {
-			refresh(request.goodreadsID, request.overdriveURLs, request.shelves, "manual");
+			refresh(request.goodreadsID, request.overdriveURLs, request.shelves, "manual", request.sessionId, request.trigger);
 		}
 	} else if (request.msg === "fetchShelves") {
 		fetchShelves(request.goodreadsID).then(function (result) {
@@ -108,6 +313,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	} else if (request.msg === "elapsedTime") {
 		getElapsedTime();
 	} else if (request.msg === "cancelScan") {
+		if (currentScanMeta) Analytics.trackScanCancelled(currentScanMeta);
 		currentScanId++;
 		isScanningLocal = false;
 		chrome.storage.session.set({ currently_scanning: false });
@@ -160,37 +366,56 @@ function getElapsedTime() {
 				console.log("Elapsed Time Since Last Refresh: " + elapsedTime + " min");
 
 				// Auto-refresh only for Pro users
-				chrome.storage.session.get(["currently_scanning"], async function (scanResult) {
-					let isPro = false;
-					try {
-						const ep = ExtPay('library-scan');
-						const user = await ep.getUser();
-						isPro = !!user.paid;
-						chrome.storage.local.set({ isPro: isPro });
-					} catch (e) {
-						const proResult = await new Promise(function (resolve) {
-							chrome.storage.local.get(["isPro"], function (r) { resolve(r); });
-						});
-						isPro = !!proResult.isPro;
+				chrome.storage.session.get(["currently_scanning", "scan_started_at"], async function (scanResult) {
+					// A scan flag older than STALE_SCAN_MS means the service
+					// worker was likely killed mid-scan — don't let it block
+					// auto-refresh forever.
+					let scanning = scanResult.currently_scanning;
+					if (scanning && (!scanResult.scan_started_at || (Date.now() - scanResult.scan_started_at) > STALE_SCAN_MS)) {
+						scanning = false;
+						isScanningLocal = false;
+						chrome.storage.session.set({ currently_scanning: false });
 					}
 
-					if (isPro && elapsedTime > refreshWait && !scanResult.currently_scanning) {
-						refresh(goodreadsID, overdriveURLs, result.selectedShelves, "auto");
+					// Gate auto-refresh on the cached Pro status; a live getUser()
+					// here used to hit the ExtensionPay API on every 1-minute tick.
+					const proResult = await new Promise(function (resolve) {
+						chrome.storage.local.get(["isPro", "isProCheckedAt"], function (r) { resolve(r); });
+					});
+					let isPro = !!proResult.isPro;
+					if (!proResult.isProCheckedAt || (Date.now() - proResult.isProCheckedAt) > PRO_RECHECK_MS) {
+						// Bump the timestamp before fetching so a failing API
+						// doesn't get retried every minute.
+						chrome.storage.local.set({ isProCheckedAt: Date.now() });
+						try {
+							const user = await getExtPayUser();
+							isPro = !!user.paid;
+							chrome.storage.local.set({ isPro: isPro });
+							Analytics.linkPaidUser(user);
+						} catch (e) {
+							// Network error or timeout — keep the cached value
+						}
+					}
+
+					if (isPro && elapsedTime > refreshWait && !scanning) {
+						refresh(goodreadsID, overdriveURLs, result.selectedShelves, "auto", undefined, "auto");
 						elapsedTime = 0;
 					}
 
 					// Send elapsed time to popup
 					chrome.runtime.sendMessage({ msg: "ElapsedTime", time: formatElapsedTime(elapsedTime) }).catch(() => {});
-				});
 
-				// Auto add badge count (in case of extension update or reset)
-				if (typeof error !== "undefined" && typeof count !== "undefined") {
-					if (error == "None") {
-						updateBadgeCount(count);
-					} else {
-						updateBadgeError();
+					// Auto add badge count (in case of extension update or reset) —
+					// but never while scanning, or this would stomp the N% progress
+					// badge with the stale count on every 1-minute tick.
+					if (!scanning && typeof error !== "undefined" && typeof count !== "undefined") {
+						if (error == "None") {
+							updateBadgeCount(count);
+						} else {
+							updateBadgeError();
+						}
 					}
-				}
+				});
 			}
 		}
 	);
@@ -277,34 +502,113 @@ async function fetchShelves(goodreadsID) {
  * @param {number} goodreadsID   User ID number of user's Goodreads account
  * @param {string[]} overdriveURLs  URLs of user's OverDrive libraries
  * @param {string[]} [shelves]     Shelves to scan (defaults to ["to-read"])
- * @param {string}   [source]     Scan trigger source ("manual" or "auto")
+ * @param {string}   [source]     "manual" or "auto"
+ * @param {string}   [sessionId]  Popup analytics session that started a manual scan
+ * @param {string}   [trigger]    What started it: setup, refresh_button, settings,
+ *                                retry, no_results (popup opened with no results) or auto
  */
-function refresh(goodreadsID, overdriveURLs, shelves, source) {
+function refresh(goodreadsID, overdriveURLs, shelves, source, sessionId, trigger) {
+	// Single guard point: never start a scan while one is already running.
+	// (The manual message handler also checks this, but auto-refresh calls
+	// refresh() directly, and the async Goodreads reachability check below
+	// leaves a window where the 1-minute alarm could otherwise double-fire.)
+	if (isScanningLocal) return;
+
+	// Offline: nothing to scan. Auto-scans try again on the next 1-minute
+	// tick; a manual scan tells the popup rather than leaving it loading.
+	if (!navigator.onLine) {
+		console.log("Could not connect to Goodreads. No internet connection.");
+		if (source === "manual") chrome.runtime.sendMessage({ msg: "GoodreadsError" }).catch(() => {});
+		return;
+	}
+
+	isScanningLocal = true;
+	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
+
 	// Invalidate any in-flight scan and capture this scan's ID
 	const myScanId = ++currentScanId;
+
+	// Analytics metadata: scan_id joins this scan's events; startedAt feeds
+	// the duration on completion; sessionId ties a manual scan to the popup
+	// session (and recording) that started it. isPro and the book counts
+	// are filled in as the scan learns them.
+	const scanMeta = {
+		id: "scan_" + Date.now(),
+		startedAt: Date.now(),
+		sessionId: sessionId,
+		source: source || "unknown",
+		trigger: trigger || source || "unknown",
+	};
+	currentScanMeta = scanMeta;
 
 	// Show scanning badge immediately so the UI feels responsive
 	chrome.action.setBadgeBackgroundColor({ color: [128, 128, 128, 255] });
 	chrome.action.setBadgeTextColor({ color: [255, 255, 255, 255] });
 	chrome.action.setBadgeText({ text: "1%" });
 
-	if (navigator.onLine) {
-		fetchWithTimeout("https://www.goodreads.com/", {
-			method: "GET",
-			headers: {
-				"Content-Type": "text/xml",
-			},
-		}, 15000)
-			.then((response) => {
-				if (myScanId !== currentScanId) return;
-				queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source);
-			})
-			.catch(function (err) {
-				console.log("Could not connect to Goodreads. No internet connection.");
+	fetchWithTimeout("https://www.goodreads.com/", {
+		method: "GET",
+		headers: {
+			"Content-Type": "text/xml",
+		},
+	}, 15000)
+		.then((response) => {
+			if (myScanId !== currentScanId) return;
+			queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source, scanMeta);
+		})
+		.catch(function (err) {
+			if (myScanId !== currentScanId) return;
+			console.log("Could not connect to Goodreads.", err);
+			isScanningLocal = false;
+			chrome.storage.session.set({ currently_scanning: false });
+			// Back off like any failed scan. This used to retry every minute
+			// and leave the badge stuck at "1%".
+			recordScanError("Goodreads").then(function (failures) {
+				Analytics.trackScanFailed(scanMeta, "goodreads_unreachable", {
+					error_message: err.message,
+					http_status: err.status,
+					timed_out: !!err.timedOut,
+					consecutive_failures: failures,
+				});
 			});
-	} else {
-		console.log("Could not connect to Goodreads. No internet connection.");
-	}
+			chrome.runtime.sendMessage({ msg: "GoodreadsError" }).catch(() => {});
+		});
+}
+
+/**
+ * Record a failed scan: error badge, error state for the popup, and an
+ * exponential back-off (1 minute, doubling up to 7 days) so a failing scan
+ * isn't retried every minute. Kept in local storage so restarting the
+ * browser doesn't reset the back-off.
+ *
+ * @param {string} errorSource  "Goodreads" or "OverDrive"
+ * @returns {Promise<number>} Failed scans in a row, including this one
+ */
+function recordScanError(errorSource) {
+	updateBadgeError();
+	return new Promise(function (resolve) {
+		chrome.storage.local.get(["errorTimeout", "consecutiveScanFailures"], function (result) {
+			let errorTimeout = result.errorTimeout || 0;
+			errorTimeout = errorTimeout > 0 ? errorTimeout * 2 : 1;
+			if (errorTimeout > refreshWait * 7) errorTimeout = refreshWait * 7;
+
+			// Back-date LastRun so the next auto-scan comes errorTimeout minutes from now
+			let last_run_time = new Date();
+			last_run_time.setMinutes(
+				last_run_time.getMinutes() - refreshWait + errorTimeout
+			);
+			const failures = (result.consecutiveScanFailures || 0) + 1;
+			chrome.storage.local.set({
+				error: errorSource,
+				count: 0,
+				errorTimeout: errorTimeout,
+				consecutiveScanFailures: failures,
+				LastRun: last_run_time.toJSON(),
+			}, function () {
+				resolve(failures);
+			});
+		});
+	});
 }
 
 /**
@@ -316,18 +620,21 @@ function refresh(goodreadsID, overdriveURLs, shelves, source) {
  * @param {string[]} [shelves]     Shelves to scan (defaults to saved selection or ["to-read"])
  * @param {number}   myScanId     Scan generation ID — bail if it no longer matches currentScanId
  * @param {string}   [source]     Scan trigger source ("manual" or "auto")
+ * @param {{id: string, startedAt: number}} scanMeta  Analytics scan metadata
  */
-async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source) {
+async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, source, scanMeta) {
 	isScanningLocal = true;
-	chrome.storage.session.set({ currently_scanning: true });
+	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
 
-	// Determine page limit based on Pro status (live check, fallback to cache)
+	// Determine page limit based on Pro status (live check, fallback to cache).
+	// Uses the shared top-level extpay instance so an unpaid→paid transition
+	// observed here still fires the onPaid listener registered above.
 	let isPro = false;
 	try {
-		const ep = ExtPay('library-scan');
-		const user = await ep.getUser();
+		const user = await getExtPayUser();
 		isPro = !!user.paid;
-		chrome.storage.local.set({ isPro: isPro });
+		chrome.storage.local.set({ isPro: isPro, isProCheckedAt: Date.now() });
+		Analytics.linkPaidUser(user);
 	} catch (e) {
 		const proResult = await new Promise(function (resolve) {
 			chrome.storage.local.get(["isPro"], function (r) { resolve(r); });
@@ -335,6 +642,7 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		isPro = !!proResult.isPro;
 	}
 	const MAX_RSS_PAGES = isPro ? PRO_MAX_RSS_PAGES : FREE_MAX_RSS_PAGES;
+	scanMeta.isPro = isPro;
 
 	// Resolve shelves: use provided list, or fall back to storage, or default to ["to-read"]
 	if (!shelves || shelves.length === 0) {
@@ -346,7 +654,17 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		shelves = (stored && stored.length > 0) ? stored : ["to-read"];
 	}
 
-	Analytics.trackScanStarted(source || "unknown", shelves.length, overdriveURLs.length);
+	// Free tier only scans the default "to-read" shelf and the first saved
+	// library, regardless of what was passed or stored. This enforces the gate
+	// server-side so the popup never has to destructively overwrite saved
+	// settings — a downgraded user's extra shelves/libraries stay saved and
+	// re-activate if they upgrade again.
+	if (!isPro) {
+		shelves = ["to-read"];
+		overdriveURLs = overdriveURLs.slice(0, 1);
+	}
+
+	Analytics.trackScanStarted(scanMeta, { shelf_count: shelves.length, library_count: overdriveURLs.length });
 
 	// Update Loading view carousel messages every 10 seconds
 	let carousel_messages = [
@@ -356,6 +674,8 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		"Use the search bar to explore your OverDrive libraries beyond just your Goodreads shelves.",
 	];
 	let carousel_position = 1;
+	// Kill any timer leaked by a previous (superseded) scan before starting ours
+	clearInterval(carousel_message_timer);
 	carousel_message_timer = setInterval(function () {
 		chrome.runtime.sendMessage({
 			msg: "CarouselMsg",
@@ -372,6 +692,8 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 	try {
 		let ToRead = [];
 		const seenTitles = new Set();
+		// Free scans read one feed page; a full page means more books were left out
+		let truncatedByFreeLimit = false;
 
 		// Iterate through each shelf sequentially to avoid rate limiting
 		for (let s = 0; s < shelves.length && myScanId === currentScanId; s++) {
@@ -389,12 +711,21 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 				const response = await fetchWithTimeout(rssURL);
 				const xmlString = await response.text();
 
+				// A private or missing profile, or a block page, comes back as
+				// a web page rather than a feed
+				if (xmlString.indexOf("<rss") === -1) {
+					const notFeedErr = new Error("Goodreads returned a web page instead of a shelf feed");
+					notFeedErr.stage = "goodreads_not_feed";
+					throw notFeedErr;
+				}
+
 				// Parse RSS XML items using regex (DOMParser not available in service workers)
 				const itemRegex = /<item>([\s\S]*?)<\/item>/g;
 				const titleRegex = /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/;
 				const authorRegex = /<author_name>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/author_name>/;
 				let itemMatch;
 				let itemCount = 0;
+				let parsedCount = 0;
 
 				while ((itemMatch = itemRegex.exec(xmlString)) !== null) {
 					itemCount++;
@@ -404,6 +735,7 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 					const title = titleMatch ? titleMatch[1].trim() : null;
 					const author = authorMatch ? authorMatch[1].trim() : null;
 					if (title && author) {
+						parsedCount++;
 						// Deduplicate across shelves by title+author
 						const key = title.toLowerCase() + "|||" + author.toLowerCase();
 						if (!seenTitles.has(key)) {
@@ -418,6 +750,18 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 					break;
 				}
 
+				// Books listed but none readable: Goodreads changed its feed format
+				if (parsedCount === 0) {
+					const formatErr = new Error("Goodreads shelf feed items have no readable title/author");
+					formatErr.name = "GoodreadsFeedFormatError";
+					formatErr.stage = "goodreads_format";
+					throw formatErr;
+				}
+
+				if (!isPro && page === MAX_RSS_PAGES && itemCount >= 100) {
+					truncatedByFreeLimit = true;
+				}
+
 				console.log("Goodreads RSS shelf=" + shelfName + " page " + page + ": " + itemCount + " books");
 
 				// If fewer than 100 items, this was the last page
@@ -428,22 +772,27 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		}
 
 		if (myScanId !== currentScanId) {
+			// Superseded — don't touch the carousel timer: it's either already
+			// cleared (cancel) or belongs to the newer scan.
 			console.log("Scan invalidated during Goodreads fetch.");
-			clearInterval(carousel_message_timer);
 			return;
 		}
 
 		console.log("Goodreads shelves (" + shelves.join(", ") + "): " + ToRead.length + " books total");
 		console.log(ToRead);
 
-		Analytics.trackScanCompleted(ToRead.length, overdriveURLs.length, shelves.length);
+		scanMeta.booksChecked = ToRead.length;
+		scanMeta.truncatedByFreeLimit = truncatedByFreeLimit;
+		scanMeta.shelfCount = shelves.length;
 
 		if (ToRead.length === 0) {
-			throw new Error("No books found on selected shelves");
+			const emptyErr = new Error("No books found on selected shelves");
+			emptyErr.emptyShelves = true;
+			throw emptyErr;
 		}
 
 		// Query OverDrive for these titles
-		queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID);
+		queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scanMeta);
 
 		// Send initial progress to popup
 		chrome.runtime.sendMessage({
@@ -456,28 +805,32 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		}).catch(() => {});
 
 	} catch (err) {
+		// A superseded scan must not release the lock, clear the timer, or
+		// write error state — all of that now belongs to the newer scan.
+		if (myScanId !== currentScanId) {
+			console.log("Scan invalidated during Goodreads fetch (error path).");
+			return;
+		}
 		console.log("Goodreads fetch Error ", err);
 		isScanningLocal = false;
 		chrome.storage.session.set({ currently_scanning: false });
 		clearInterval(carousel_message_timer);
-		Analytics.trackScanFailed('goodreads', err.message);
-		updateBadgeError();
-
-		chrome.storage.local.set({ error: "Goodreads", count: 0 });
-
-		// Double error timeout upon each repeated error to prevent over-refreshing
-		chrome.storage.session.get(["errorTimeout"], function (result) {
-			let errorTimeout = result.errorTimeout || 0;
-			errorTimeout = errorTimeout > 0 ? errorTimeout * 2 : 1;
-			if (errorTimeout > refreshWait * 7) errorTimeout = refreshWait * 7;
-			chrome.storage.session.set({ errorTimeout: errorTimeout });
-
-			let last_run_time = new Date();
-			last_run_time.setMinutes(
-				last_run_time.getMinutes() - refreshWait + errorTimeout
-			);
-			chrome.storage.local.set({ LastRun: last_run_time.toJSON() });
+		// empty_shelves is a setup problem (read fine, nothing on the shelf);
+		// the other stages mean the shelves couldn't be read
+		const stage = err.stage || (err.emptyShelves ? "empty_shelves" : "goodreads_error");
+		recordScanError("Goodreads").then(function (failures) {
+			Analytics.trackScanFailed(scanMeta, stage, {
+				error_message: err.message,
+				http_status: err.status,
+				timed_out: !!err.timedOut,
+				consecutive_failures: failures,
+			});
 		});
+		// A feed format change would break every scan at once, so it also
+		// goes to Error Tracking, which alerts on new or spiking issues
+		if (stage === "goodreads_format") {
+			Analytics.trackError("scan", err, { handled: true });
+		}
 
 		chrome.runtime.sendMessage({ msg: "GoodreadsError" }).catch(() => {});
 	}
@@ -492,8 +845,9 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
  * @param {string}      ToRead[].author     Book's author
  * @param {string[]}    overdriveURLs       URLs of user's OverDrive libraries
  * @param {number}      myScanId            Scan generation ID — bail if it no longer matches currentScanId
+ * @param {{id: string, startedAt: number}} scanMeta  Analytics scan metadata
  */
-async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
+async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scanMeta) {
 	console.log("Query OverDrive (" + overdriveURLs.length + " libraries).");
 
 	// Refresh shelf counts in the background while OverDrive scan runs,
@@ -529,6 +883,9 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		let overdriveURL = overdriveURLs[libIdx];
 		let libraryError = false;
 		let libraryMatchCount = 0;
+		// Where the last search page actually came from, to tell a moved or
+		// retired library apart from an OverDrive page format change
+		let lastPage = null;
 		console.log("Scanning library: " + overdriveURL);
 
 		// Send reset progress at the start of each library
@@ -555,9 +912,14 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 				const html = await res.text();
 
 				// Identify book availability data in response
-				let regexSearch = /window\.OverDrive\.mediaItems\s*=\s*(\{.*\});/;
-				let overdriveSearchMatch = html.match(regexSearch);
-				if (!overdriveSearchMatch) {
+				let overdriveJSONresults = extractOverdriveMediaItems(html);
+				if (!overdriveJSONresults) {
+					const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+					lastPage = {
+						status: res.status,
+						finalHost: hostOf(res.url),
+						title: titleMatch ? titleMatch[1].trim().substring(0, 100) : "",
+					};
 					console.log(
 						ToRead[i].title + " by " + ToRead[i].author + " not found at " + overdriveURL
 					);
@@ -577,7 +939,6 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 					continue;
 				}
 				libraryMatchCount++;
-				let overdriveJSONresults = JSON.parse(overdriveSearchMatch[1]);
 				let JSON_length = Object.keys(overdriveJSONresults).length;
 
 				if (JSON_length === 0) {
@@ -631,7 +992,13 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 				chrome.action.setBadgeText({ text: pct + "%" });
 			} catch (err) {
 				console.log("OverDrive fetch Error for " + overdriveURL + ": ", err);
-				Analytics.trackOverdriveLibraryFailed(overdriveURL, err.message);
+				Analytics.trackLibraryScanFailed(scanMeta, {
+					library_domain: hostOf(overdriveURL),
+					error_type: err.timedOut ? "timeout" : err.status ? "http" : "network",
+					error_message: String(err.message || "").substring(0, 200),
+					http_status: err.status,
+					books_checked: i,
+				});
 				libraryError = true;
 				failedLibraries.push(overdriveURL);
 				// Skip remaining books for this library
@@ -639,18 +1006,39 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 			}
 		}
 
-		// If the OverDrive data regex never matched for any book, the library URL is likely invalid
+		// No search page had OverDrive's book data: either the library's site
+		// sent us somewhere else (a bad or retired library address), or it's
+		// the right site and OverDrive changed its page format
 		if (!libraryError && libraryMatchCount === 0 && ToRead.length > 0) {
 			console.log("No OverDrive data found for any book at " + overdriveURL + " — treating as failed library.");
-			Analytics.trackOverdriveLibraryFailed(overdriveURL, "No OverDrive data matched");
+			const libraryHost = hostOf(overdriveURL);
+			const redirected = !!(lastPage && lastPage.finalHost && lastPage.finalHost !== libraryHost);
+			const details = {
+				library_domain: libraryHost,
+				error_type: redirected ? "redirected" : "format",
+				http_status: lastPage ? lastPage.status : undefined,
+				final_host: lastPage ? lastPage.finalHost : undefined,
+				page_title: lastPage ? lastPage.title : undefined,
+				books_checked: ToRead.length,
+			};
+			Analytics.trackLibraryScanFailed(scanMeta, details);
+			// Some libraries always fail this way; a jump across many
+			// libraries means OverDrive changed its pages. Error Tracking
+			// groups these into one issue and alerts when it spikes.
+			if (!redirected) {
+				const formatErr = new Error("OverDrive search page has no book data");
+				formatErr.name = "OverDriveFormatError";
+				Analytics.trackError("scan", formatErr, { handled: true, dedupeKey: libraryHost, properties: details });
+			}
 			failedLibraries.push(overdriveURL);
 		}
 	}
 
-	// Scan was invalidated (cancelled or superseded) — exit without saving partial results
+	// Scan was invalidated (cancelled or superseded) — exit without saving
+	// partial results. Leave the carousel timer alone: it's either already
+	// cleared (cancel) or belongs to the newer scan.
 	if (myScanId !== currentScanId) {
 		console.log("Scan invalidated during OverDrive fetch.");
-		clearInterval(carousel_message_timer);
 		return;
 	}
 
@@ -660,25 +1048,16 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 		isScanningLocal = false;
 		chrome.storage.session.set({ currently_scanning: false });
 		clearInterval(carousel_message_timer);
-		updateBadgeError();
 
-		chrome.storage.local.set({ error: "OverDrive", count: 0 });
-
-		chrome.storage.session.get(["errorTimeout"], function (result) {
-			let errorTimeout = result.errorTimeout || 0;
-			errorTimeout = errorTimeout > 0 ? errorTimeout * 2 : 1;
-			if (errorTimeout > refreshWait * 7) errorTimeout = refreshWait * 7;
-			chrome.storage.session.set({ errorTimeout: errorTimeout });
-
-			let last_run_time = new Date();
-			last_run_time.setMinutes(
-				last_run_time.getMinutes() - refreshWait + errorTimeout
-			);
-			chrome.storage.local.set({ LastRun: last_run_time.toJSON() });
+		var failedDomains = failedLibraries.map(hostOf);
+		recordScanError("OverDrive").then(function (failures) {
+			Analytics.trackScanFailed(scanMeta, "overdrive", {
+				books_checked: ToRead.length,
+				library_count: overdriveURLs.length,
+				failed_domains: failedDomains,
+				consecutive_failures: failures,
+			});
 		});
-
-		var failedDomains = failedLibraries.map(function (u) { try { return new URL(u).hostname; } catch (e) { return u; } });
-		Analytics.trackOverdriveAllFailed(failedDomains);
 		chrome.runtime.sendMessage({ msg: "OverdriveError", failedLibraries: failedLibraries }).catch(() => {});
 	} else {
 		// At least one library succeeded
@@ -725,7 +1104,13 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 					body += "\n...and " + (listBooks.length - 8) + " more";
 				}
 
-				var notifData = { title: "Library Scan Pro", message: body };
+				var notifData = {
+					title: "Library Scan",
+					message: body,
+					newBooks: newBooks.length,
+					totalBooks: allAvailable.length,
+					scanSource: scanMeta.source,
+				};
 				chrome.notifications.create("library-scan-new-books", {
 					type: "basic",
 					iconUrl: chrome.runtime.getURL("icons/icon128.png"),
@@ -736,6 +1121,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 						console.error("Notification error:", chrome.runtime.lastError.message);
 					} else {
 						console.log("Notification created:", notificationId);
+						Analytics.trackNotificationShown(newBooks.length, allAvailable.length, scanMeta.source, false);
 					}
 				});
 				// Save for re-send if user is currently idle/locked
@@ -745,6 +1131,22 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 					}
 				});
 			}
+
+			Analytics.trackScanCompleted(scanMeta, {
+				outcome: failedLibraries.length > 0 ? "partial" : "success",
+				books_checked: ToRead.length,
+				shelf_count: scanMeta.shelfCount,
+				available_count: available_count,
+				hold_count: unavailable_count,
+				new_available_count: prev.BookAvailability && prev.BookAvailability.length > 0 ? newBooks.length : 0,
+				library_count: overdriveURLs.length,
+				failed_library_count: failedLibraries.length,
+				library_domains: overdriveURLs.map(hostOf),
+				failed_domains: failedLibraries.map(hostOf),
+				duration_ms: Date.now() - scanMeta.startedAt,
+				truncated_by_free_limit: !!scanMeta.truncatedByFreeLimit,
+				is_first_scan: !prev.BookAvailability,
+			});
 
 			// Save PreviouslyAvailable first, then overwrite BookAvailability and notify popup
 			chrome.storage.local.set({ PreviouslyAvailable: prevAvailable }, function () {
@@ -775,7 +1177,8 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 
 		clearInterval(carousel_message_timer);
 		isScanningLocal = false;
-		chrome.storage.session.set({ currently_scanning: false, errorTimeout: 0 });
+		chrome.storage.session.set({ currently_scanning: false });
+		chrome.storage.local.set({ errorTimeout: 0, consecutiveScanFailures: 0 });
 
 		// Filter for accurate badge count based on toggle preferences
 		updateBadgeCount(available_count);
@@ -808,11 +1211,47 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID) {
 				}
 			}
 		);
-		var libraryDomains = overdriveURLs.map(function (u) { try { return new URL(u).hostname; } catch (e) { return u; } });
-		var failedDomains = failedLibraries.map(function (u) { try { return new URL(u).hostname; } catch (e) { return u; } });
-		Analytics.trackOverdriveScanCompleted(available_count, unavailable_count, libraryDomains, failedDomains);
 		console.log("OverDrive scan complete.");
 	}
+}
+
+/**
+ * Extract the `window.OverDrive.mediaItems = {...};` JSON object from an
+ * OverDrive HTML page by balancing braces (string-aware), instead of a greedy
+ * single-line regex that can over- or under-match if the page format shifts.
+ *
+ * @param {string} html  Raw OverDrive page HTML
+ * @returns {Object|null} Parsed mediaItems object, or null if not found/parseable
+ */
+function extractOverdriveMediaItems(html) {
+	const marker = html.match(/window\.OverDrive\.mediaItems\s*=\s*/);
+	if (!marker) return null;
+	let start = marker.index + marker[0].length;
+	if (html[start] !== "{") return null;
+
+	let depth = 0, inStr = false, esc = false;
+	for (let i = start; i < html.length; i++) {
+		const ch = html[i];
+		if (inStr) {
+			if (esc) esc = false;
+			else if (ch === "\\") esc = true;
+			else if (ch === '"') inStr = false;
+		} else if (ch === '"') {
+			inStr = true;
+		} else if (ch === "{") {
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0) {
+				try {
+					return JSON.parse(html.slice(start, i + 1));
+				} catch (e) {
+					return null;
+				}
+			}
+		}
+	}
+	return null;
 }
 
 /**
@@ -833,17 +1272,25 @@ async function fetchWithTimeout(uri, options = {}, time = 60000) {
 		const response = await fetch(uri, config);
 		clearTimeout(timeout);
 		if (!response.ok) {
-			throw new Error(`${response.status}: ${response.statusText}`);
+			const httpError = new Error(`${response.status}: ${response.statusText}`);
+			httpError.status = response.status;
+			throw httpError;
 		}
 		return response;
 	} catch (error) {
 		clearTimeout(timeout);
+		// No per-request analytics here: a single broken scan produces hundreds
+		// of failed fetches, drowning reports in noise. Failures are tracked in
+		// aggregate by the scan-level events, which carry the status/timeout
+		// attached here.
 		if (error.name === "AbortError") {
-			Analytics.trackTimeout(uri);
-			throw new Error("Response timed out.");
+			const timeoutError = new Error("Response timed out.");
+			timeoutError.timedOut = true;
+			throw timeoutError;
 		}
-		Analytics.trackFetchFailure(error.message);
-		throw new Error(error.message);
+		const wrapped = new Error(error.message);
+		if (error.status) wrapped.status = error.status;
+		throw wrapped;
 	}
 }
 

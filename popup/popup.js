@@ -4,8 +4,23 @@ const extpay = ExtPay('library-scan');
 // Current filter tab: "all", "eBook", or "Audiobook"
 var activeFilter = "all";
 
+// Single source of truth for Pro status within the popup. Updated by
+// applyProStatus() so shelf gating and other UI never read a second, racing
+// copy from storage.
+var currentIsPro = false;
+
+// A currently_scanning flag older than this is stale (service worker was
+// likely killed mid-scan). Must match STALE_SCAN_MS in background.js.
+var STALE_SCAN_MS = 10 * 60 * 1000;
+
+// Start PostHog. Clicks, session recording, uncaught errors and the popup
+// closing are captured automatically; each screen is a $pageview sent by
+// Analytics.trackScreenView. Calls made before it's ready are queued.
+Analytics.initPopup();
+
 // Search state
 var searchDebounceTimer = null;
+var searchAnalyticsTimer = null; // reports a search once the user stops typing
 var currentSearchController = null;
 var lastSearchQuery = null;
 var lastSearchLocal = null;
@@ -41,7 +56,6 @@ document.addEventListener("DOMContentLoaded", function () {
 			});
 			btn.classList.add("active");
 			activeFilter = btn.getAttribute("data-filter");
-			Analytics.trackFilterChanged(activeFilter);
 
 			// Persist toggle preferences to local storage
 			var ebookOn = activeFilter === "all" || activeFilter === "eBook";
@@ -84,9 +98,12 @@ document.addEventListener("DOMContentLoaded", function () {
 	document.getElementById("goodreadsID").addEventListener("blur", function () {
 		var parsed = parseGoodreadsID(this.value);
 		if (parsed) {
+			var changed = this.getAttribute("data-last-valid") !== goodreadsDisplayURL(parsed);
 			this.value = goodreadsDisplayURL(parsed);
 			this.setAttribute("data-last-valid", this.value);
-			chrome.storage.local.set({ goodreadsID: parsed });
+			chrome.storage.local.set({ goodreadsID: parsed }, function () {
+				if (changed) trackSettingChange("goodreads_profile");
+			});
 			loadShelvesForUser(parsed);
 		} else {
 			// Restore previous valid value
@@ -121,11 +138,11 @@ document.addEventListener("DOMContentLoaded", function () {
 	// Retry buttons
 	document.getElementById("goodreads_retry").addEventListener("click", function () {
 		document.getElementById("goodreads_fail").classList.add("d-none");
-		reloadData();
+		reloadData(undefined, undefined, undefined, "retry");
 	});
 	document.getElementById("overdrive_retry").addEventListener("click", function () {
 		document.getElementById("overdrive_fail").classList.add("d-none");
-		reloadData();
+		reloadData(undefined, undefined, undefined, "retry");
 	});
 
 	// Wizard: auto-detect
@@ -157,13 +174,46 @@ document.addEventListener("DOMContentLoaded", function () {
 	document.getElementById("wizard-next").addEventListener("click", wizardComplete);
 
 	// Hide scan footer when Pro settings tab is active
+	var settingsScreens = {
+		"settings-goodreads-tab": "settings_goodreads",
+		"settings-overdrive-tab": "settings_overdrive",
+		"settings-pro-tab": "settings_pro",
+	};
 	document.querySelectorAll("#settings-tabs button").forEach(function (tab) {
 		tab.addEventListener("shown.bs.tab", function () {
 			var footer = document.getElementById("scan_footer");
 			footer.classList.toggle("d-none", tab.id === "settings-pro-tab");
-			if (tab.id === "settings-pro-tab") {
-				Analytics.trackProTabViewed();
+			if (settingsScreens[tab.id]) {
+				Analytics.trackScreenView(settingsScreens[tab.id]);
 			}
+		});
+	});
+
+	// Track main tab views for flow analysis
+	document.getElementById("pills-home-tab").addEventListener("shown.bs.tab", function () {
+		Analytics.trackScreenView("library");
+	});
+	document.getElementById("pills-settings-tab").addEventListener("shown.bs.tab", function () {
+		var active = document.querySelector("#settings-tabs .nav-link.active");
+		Analytics.trackScreenView((active && settingsScreens[active.id]) || "settings_goodreads");
+	});
+
+	// Seed UI from cached Pro status immediately so the popup opens in the
+	// right state; getUser() below refines it once the network responds.
+	// popup_opened (the DAU backbone) fires here from cache — never gated on
+	// a network call, so quick check-ins still get counted.
+	chrome.storage.local.get(["isPro", "goodreadsID", "overdriveURLs", "selectedShelves", "BookAvailability", "LastRun"], function (result) {
+		applyProStatus(!!result.isPro);
+		var libraries = result.overdriveURLs || [];
+		var books = result.BookAvailability || [];
+		Analytics.trackPopupOpened({
+			is_pro: !!result.isPro,
+			setup_complete: !!(result.goodreadsID && libraries.length > 0),
+			library_count: libraries.length,
+			shelf_count: (result.selectedShelves || ["to-read"]).length,
+			books_available: books.filter(function (b) { return b.available; }).length,
+			books_total: books.length,
+			last_scan_at: result.LastRun ? new Date(result.LastRun).getTime() : null,
 		});
 	});
 
@@ -172,18 +222,16 @@ document.addEventListener("DOMContentLoaded", function () {
 		var isPro = !!user.paid;
 		chrome.storage.local.set({ isPro: isPro });
 		applyProStatus(isPro);
-		Analytics.trackPopupOpened(isPro);
+		Analytics.linkPaidUser(user);
 	}).catch(function () {
 		// Network error — fall back to cached status
 		chrome.storage.local.get(["isPro"], function (result) {
 			applyProStatus(!!result.isPro);
-			Analytics.trackPopupOpened(!!result.isPro);
 		});
 	});
 
 	// ExtensionPay: upgrade button
 	document.getElementById("pro_upgrade_btn").addEventListener("click", function () {
-		Analytics.trackProUpgradeClicked();
 		extpay.openPaymentPage('library-scan');
 	});
 
@@ -198,9 +246,30 @@ document.addEventListener("DOMContentLoaded", function () {
 	});
 
 	// ExtensionPay: listen for payment completion to update UI immediately
-	extpay.onPaid.addListener(function () {
+	extpay.onPaid.addListener(function (user) {
 		chrome.storage.local.set({ isPro: true });
 		applyProStatus(true);
+		refreshShelfPickerFromStorage();
+		// Whichever context observes the payment first reports it; the
+		// storage guard inside trackPurchase prevents double-counting.
+		Analytics.linkPaidUser(user).then(function () {
+			Analytics.trackPurchase(user);
+		});
+	});
+
+	// React live to Pro status captured elsewhere — e.g. a payment that
+	// completed while this popup was closed and was then confirmed by the
+	// background poll (which writes isPro). Without this, users had to close
+	// and reopen the popup before their new features appeared.
+	// No currentIsPro guard here: Chrome only fires onChanged on real value
+	// changes, and getUser()'s .then may have already updated currentIsPro —
+	// a guard would then swallow the shelf-picker re-render, leaving saved
+	// shelves visually unchecked (a duplicate render is harmless).
+	chrome.storage.onChanged.addListener(function (changes, area) {
+		if (area === "local" && changes.isPro) {
+			applyProStatus(!!changes.isPro.newValue);
+			refreshShelfPickerFromStorage();
+		}
 	});
 
 	// Initialize user data and view
@@ -238,10 +307,13 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 			});
 		}
 	} else if (request.msg === "Complete") {
+		// Whether the user was watching the scan (loading view visible) —
+		// decides below if we yank them over to the Library tab.
+		var wasWatchingScan = !document.getElementById("home_loading").classList.contains("d-none");
 		// Reset Loading view statistics to default
 		document.getElementById("loading_text").textContent = "Downloading Goodreads Books...";
 		document.getElementById("loading_carousel_message").innerHTML =
-			"<em>We'll scan up to 500 books on your Goodreads To-Read shelf to find titles already available at your local OverDrive library.</em>";
+			"<em>We'll scan your selected Goodreads shelves to find titles already available at your local OverDrive library.</em>";
 		const loadingBar = document.getElementById("loading_bar");
 		loadingBar.setAttribute("aria-valuemax", "200");
 		loadingBar.setAttribute("aria-valuenow", "0");
@@ -253,11 +325,15 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 		document.getElementById("goodreads_fail").classList.add("d-none");
 		document.getElementById("overdrive_fail").classList.add("d-none");
 		document.getElementById("goodreadsID").closest(".input-group").classList.remove("has-error");
-		// Switch to Library tab and display new book data
-		document.getElementById("pills-home").classList.add("show", "active");
-		document.getElementById("pills-settings").classList.remove("show", "active");
-		document.getElementById("pills-home-tab").classList.add("active");
-		document.getElementById("pills-settings-tab").classList.remove("active");
+		// Switch to Library tab and display new book data — but only if the
+		// user was watching the scan; a background auto-refresh completing
+		// shouldn't yank them out of the Settings tab mid-edit.
+		if (wasWatchingScan) {
+			document.getElementById("pills-home").classList.add("show", "active");
+			document.getElementById("pills-settings").classList.remove("show", "active");
+			document.getElementById("pills-home-tab").classList.add("active");
+			document.getElementById("pills-settings-tab").classList.remove("active");
+		}
 		updateMainPage(request.BookAvailability);
 		if (request.failedLibraries && request.failedLibraries.length > 0) {
 			showPartialOverdriveError(request.failedLibraries);
@@ -269,12 +345,12 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 	} else if (request.msg === "OverdriveError") {
 		overdriveError(request.failedLibraries);
 	}
-	return true;
+	// No return value: this listener never calls sendResponse, and returning
+	// true would hold every message channel open until the popup closes.
 });
 
 function logReload() {
-	Analytics.trackManualRefresh();
-	reloadData();
+	reloadData(undefined, undefined, undefined, "refresh_button");
 }
 
 
@@ -397,6 +473,7 @@ function autodetectGoodreads(btnId, hintId, inputId) {
 							if (r.detectedGoodreadsID) {
 								applyDetectedID(r.detectedGoodreadsID, btn, hint, input);
 							} else {
+								Analytics.trackAutodetectUsed(btnId === "wizard_autodetect" ? "wizard" : "settings", false);
 								btn.disabled = false;
 								btn.innerHTML = '<i class="fa fa-magic" aria-hidden="true"></i>';
 								hint.textContent = "Please make sure you're signed in to Goodreads on this browser.";
@@ -418,11 +495,15 @@ function autodetectGoodreads(btnId, hintId, inputId) {
  * Apply a detected Goodreads ID to the input field.
  */
 function applyDetectedID(id, btn, hint, input) {
+	Analytics.trackAutodetectUsed(btn.id === "wizard_autodetect" ? "wizard" : "settings", true);
 	btn.disabled = false;
 	btn.innerHTML = '<i class="fa fa-magic" aria-hidden="true"></i>';
+	var changed = input.id === "goodreadsID" && input.getAttribute("data-last-valid") !== goodreadsDisplayURL(id);
 	input.value = goodreadsDisplayURL(id);
 	input.setAttribute("data-last-valid", input.value);
-	chrome.storage.local.set({ goodreadsID: id });
+	chrome.storage.local.set({ goodreadsID: id }, function () {
+		if (changed) trackSettingChange("goodreads_profile");
+	});
 	hint.innerHTML = 'Paste your profile URL, or click <i class="fa fa-magic"></i> to auto-detect.';
 	hint.style.color = "";
 	// Load shelves if this is the settings input
@@ -464,6 +545,7 @@ function checkConnectivity(callback) {
  * Show a full-screen offline empty state — hides all other UI.
  */
 function showOfflineState() {
+	Analytics.trackScreenView("offline");
 	hideSkeleton();
 	document.getElementById("home_normal").classList.add("d-none");
 	document.getElementById("home_loading").classList.add("d-none");
@@ -496,10 +578,13 @@ function loadUserDataOnline() {
 
 			if (
 				typeof goodreadsID !== "undefined" &&
-				overdriveURLs && overdriveURLs.length > 0 &&
-				typeof error !== "undefined"
+				overdriveURLs && overdriveURLs.length > 0
 			) {
-				// Existing user — use full-height popup
+				// Existing user — use full-height popup.
+				// Note: we key off saved settings, NOT `error`. `error` isn't
+				// written until the first scan finishes, so requiring it here
+				// used to bounce users back into the setup wizard if they closed
+				// and reopened the popup during (or after a failed) first scan.
 				document.body.classList.add("full-height");
 
 				// Hide wizard, show main UI
@@ -531,39 +616,55 @@ function loadUserDataOnline() {
 					}
 				});
 
-				if (error === "Goodreads" || error === "OverDrive") {
-					// Show error banner on the relevant settings sub-tab
-					if (error === "Goodreads") {
-						goodreadsError();
+				// If a scan is actively running (popup opened mid-scan), show the
+				// loading view immediately instead of stale results — progress
+				// messages take over from there. A stale flag (service worker
+				// killed mid-scan) falls through to the normal views.
+				chrome.storage.session.get(["currently_scanning", "scan_started_at"], function (session) {
+					var scanActive = session.currently_scanning && session.scan_started_at &&
+						(Date.now() - session.scan_started_at) < STALE_SCAN_MS;
+					if (scanActive) {
+						showTab("pills-home-tab");
+						loadingScreen();
+						return;
+					}
+
+					if (error === "Goodreads" || error === "OverDrive") {
+						// Show error banner on the relevant settings sub-tab
+						if (error === "Goodreads") {
+							goodreadsError();
+						} else {
+							overdriveError();
+						}
+
+						// If we have cached books from a previous successful scan,
+						// keep them browsable on the Library tab.
+						if (typeof BookAvailability !== "undefined") {
+							updateMainPage(BookAvailability);
+							chrome.runtime.sendMessage({ msg: "elapsedTime" });
+						}
 					} else {
-						overdriveError();
-					}
+						// Default to Library view and show bottom nav bar
+						showTab("pills-home-tab");
+						document.getElementById("pills-tab").classList.remove("d-none");
+						document.body.classList.add("full-height");
 
-					// If we have cached books from a previous successful scan,
-					// keep them browsable on the Library tab.
-					if (typeof BookAvailability !== "undefined") {
-						updateMainPage(BookAvailability);
-						chrome.runtime.sendMessage({ msg: "elapsedTime" });
-					}
-				} else {
-					// Default to Library view and show bottom nav bar
-					showTab("pills-home-tab");
-					document.getElementById("pills-tab").classList.remove("d-none");
-					document.body.classList.add("full-height");
+						// Hide all Library views until book data is loaded
+						document.getElementById("home_normal").classList.add("d-none");
+						document.getElementById("home_loading").classList.add("d-none");
 
-					// Hide all Library views until book data is loaded
-					document.getElementById("home_normal").classList.add("d-none");
-					document.getElementById("home_loading").classList.add("d-none");
-
-					if (typeof BookAvailability !== "undefined") {
-						updateMainPage(BookAvailability);
-						chrome.runtime.sendMessage({ msg: "elapsedTime" });
-					} else {
-						reloadData(goodreadsID, overdriveURLs);
+						if (typeof BookAvailability !== "undefined") {
+							updateMainPage(BookAvailability);
+							chrome.runtime.sendMessage({ msg: "elapsedTime" });
+						} else {
+							reloadData(goodreadsID, overdriveURLs, undefined, "no_results");
+						}
 					}
-				}
+				});
 			} else {
 				// New user — show wizard
+				Analytics.trackWizardStarted();
+				Analytics.trackScreenView("wizard");
 				hideSkeleton();
 				document.body.classList.remove("full-height");
 				document.getElementById("wizard-screen").classList.remove("d-none");
@@ -637,7 +738,7 @@ function wizardComplete() {
 	// Start scanning
 	document.body.classList.add("full-height");
 	showTab("pills-home-tab");
-	reloadData(goodreadsID, overdriveURLs);
+	reloadData(goodreadsID, overdriveURLs, undefined, "setup");
 }
 
 /**
@@ -692,8 +793,24 @@ function addLibraryRow(url) {
  */
 function syncLibraryURLs() {
 	var urls = getLibraryURLs();
-	chrome.storage.local.set({ overdriveURLs: urls });
+	chrome.storage.local.get(["overdriveURLs"], function (result) {
+		var changed = JSON.stringify(result.overdriveURLs || []) !== JSON.stringify(urls);
+		chrome.storage.local.set({ overdriveURLs: urls }, function () {
+			if (changed) trackSettingChange("libraries");
+		});
+	});
 	updateLibraryDeleteButtons();
+}
+
+/**
+ * Report a saved settings change, with the library and shelf counts after it.
+ *
+ * @param {string} setting  "goodreads_profile" | "libraries" | "shelves"
+ */
+function trackSettingChange(setting) {
+	chrome.storage.local.get(["overdriveURLs", "selectedShelves"], function (result) {
+		Analytics.trackSettingsChanged(setting, (result.overdriveURLs || []).length, (result.selectedShelves || ["to-read"]).length);
+	});
 }
 
 /**
@@ -755,6 +872,7 @@ function showTab(tabId) {
  * Display loading screen
  */
 function loadingScreen(request) {
+	Analytics.trackScreenView("loading");
 	hideSkeleton();
 	document.body.classList.add("full-height");
 	document.getElementById("home_normal").classList.add("d-none");
@@ -794,9 +912,11 @@ function loadingScreen(request) {
  *
  * @param {Object}  book            Book data object
  * @param {boolean} isAvailable     Whether book is available for checkout
+ * @param {Set}     [newlyAvailable] URLs newly available since last scan
+ * @param {string}  [clickSource]   Analytics context ("library" | "search")
  * @returns {HTMLElement}           Book card element
  */
-function createBookCard(book, isAvailable, newlyAvailable) {
+function createBookCard(book, isAvailable, newlyAvailable, clickSource) {
 	const card = document.createElement("div");
 	card.className = "book-card";
 
@@ -887,7 +1007,7 @@ function createBookCard(book, isAvailable, newlyAvailable) {
 	btn.target = "_blank";
 	btn.textContent = isAvailable ? "Available Now" : "Place Hold";
 	btn.addEventListener('click', function () {
-		Analytics.trackBookClicked(isAvailable ? 'checkout' : 'hold');
+		Analytics.trackBookClicked(isAvailable ? 'checkout' : 'hold', clickSource || 'library', book.type, newlyAvailable, book.library || book.URL);
 	});
 	card.appendChild(btn);
 
@@ -932,6 +1052,7 @@ function updateMainPage(BookAvailability) {
  * @param {Object[]} BookAvailability All books identified on OverDrive
  */
 function renderBooks(BookAvailability) {
+	Analytics.trackScreenView("library");
 	const availableNow = document.getElementById("available_now");
 	const availableSoon = document.getElementById("available_soon");
 	availableNow.innerHTML = "";
@@ -988,7 +1109,7 @@ function renderBooks(BookAvailability) {
 			// Add available books in a grid
 			availableNow.classList.add("book-grid");
 			for (let i = 0; i < Available.length; i++) {
-				availableNow.appendChild(createBookCard(Available[i], true, newlyAvailable));
+				availableNow.appendChild(createBookCard(Available[i], true, newlyAvailable, "library"));
 			}
 
 			// If books are available, prompt user to leave a review
@@ -1021,7 +1142,7 @@ function renderBooks(BookAvailability) {
 			// Add hold books in a grid
 			availableSoon.classList.add("book-grid");
 			for (let i = 0; i < Holds.length; i++) {
-				availableSoon.appendChild(createBookCard(Holds[i], false));
+				availableSoon.appendChild(createBookCard(Holds[i], false, null, "library"));
 			}
 		}
 	});
@@ -1040,7 +1161,7 @@ function renderBooks(BookAvailability) {
 	const countBadge = document.getElementById("available_count");
 	countBadge.classList.remove("d-none");
 	countBadge.textContent = Available.length.toString();
-	chrome.storage.local.set({ count: Available.length.toString() });
+	chrome.storage.local.set({ count: Available.length });
 	chrome.runtime.sendMessage({
 		msg: "badgeCount",
 		count: Available.length,
@@ -1053,8 +1174,10 @@ function renderBooks(BookAvailability) {
  * @param {number} goodreadsID      User ID number of user's Goodreads account
  * @param {string[]} overdriveURLs  URLs of user's OverDrive libraries
  * @param {string[]} [shelves]      Shelves to scan
+ * @param {string}   [trigger]      What started the scan, for analytics: setup,
+ *                                  refresh_button, settings, retry or no_results
  */
-function reloadData(goodreadsID, overdriveURLs, shelves) {
+function reloadData(goodreadsID, overdriveURLs, shelves, trigger) {
 	if (goodreadsID === undefined || overdriveURLs === undefined) {
 		chrome.storage.local.get(
 			["goodreadsID", "overdriveURLs", "selectedShelves"],
@@ -1064,6 +1187,8 @@ function reloadData(goodreadsID, overdriveURLs, shelves) {
 					goodreadsID: result.goodreadsID,
 					overdriveURLs: result.overdriveURLs,
 					shelves: result.selectedShelves,
+					sessionId: Analytics.getSessionId(),
+					trigger: trigger,
 				});
 			}
 		);
@@ -1073,6 +1198,8 @@ function reloadData(goodreadsID, overdriveURLs, shelves) {
 			goodreadsID: goodreadsID,
 			overdriveURLs: overdriveURLs,
 			shelves: shelves,
+			sessionId: Analytics.getSessionId(),
+			trigger: trigger,
 		});
 	}
 
@@ -1114,21 +1241,27 @@ function saveUserData() {
 		return;
 	}
 
-	var selectedShelves = getSelectedShelves();
+	// Only persist the shelf selection for Pro users. For free users the
+	// non-to-read toggles render disabled+unchecked, so saving the DOM state
+	// here would wipe a downgraded user's saved multi-shelf selection (the
+	// background scan already enforces the free-tier limit).
+	var selectedShelves = currentIsPro ? getSelectedShelves() : undefined;
 
-	chrome.storage.local.set({
+	var settings = {
 		goodreadsID: goodreadsID,
 		overdriveURLs: overdriveURLs,
-		selectedShelves: selectedShelves,
-	});
+	};
+	if (selectedShelves) {
+		settings.selectedShelves = selectedShelves;
+	}
+	chrome.storage.local.set(settings);
 
 	// Remove old failure messages
 	document.getElementById("goodreads_fail").classList.add("d-none");
 	document.getElementById("overdrive_fail").classList.add("d-none");
 	document.getElementById("goodreadsID").closest(".input-group").classList.remove("has-error");
 
-	Analytics.trackSettingsUpdated();
-	reloadData(goodreadsID, overdriveURLs, selectedShelves);
+	reloadData(goodreadsID, overdriveURLs, selectedShelves, "settings");
 }
 
 /**
@@ -1136,6 +1269,7 @@ function saveUserData() {
  * Preserves cached book data so the user can still browse previous results.
  */
 function goodreadsError() {
+	Analytics.trackScreenView("settings_goodreads");
 	document.getElementById("goodreads_fail").classList.remove("d-none");
 	document.getElementById("overdrive_fail").classList.add("d-none");
 	document.getElementById("goodreadsID").closest(".input-group").classList.add("has-error");
@@ -1206,6 +1340,7 @@ function onSearchInput() {
 
 	// Cancel any pending debounce or in-flight search
 	clearTimeout(searchDebounceTimer);
+	clearTimeout(searchAnalyticsTimer);
 	if (currentSearchController) {
 		currentSearchController.abort();
 		currentSearchController = null;
@@ -1236,11 +1371,51 @@ function onSearchInput() {
 		renderSearchResults(query, allBooks, null);
 	});
 
-	// Debounce the OverDrive live search (500ms to avoid rate limiting)
+	// Debounce the OverDrive live search (500ms to avoid rate limiting).
+	// Search analytics fire from searchOverdrive once the query has settled,
+	// not per keystroke here.
 	searchDebounceTimer = setTimeout(function () {
-		Analytics.trackSearchUsed(query.length);
 		searchOverdrive(query);
 	}, 500);
+}
+
+/**
+ * Extract the `window.OverDrive.mediaItems = {...};` JSON object from an
+ * OverDrive HTML page by balancing braces (string-aware), rather than a greedy
+ * single-line regex that can over- or under-match if the page format shifts.
+ *
+ * @param {string} html  Raw OverDrive page HTML
+ * @returns {Object|null} Parsed mediaItems object, or null if not found/parseable
+ */
+function extractOverdriveMediaItems(html) {
+	var marker = html.match(/window\.OverDrive\.mediaItems\s*=\s*/);
+	if (!marker) return null;
+	var start = marker.index + marker[0].length;
+	if (html[start] !== "{") return null;
+
+	var depth = 0, inStr = false, esc = false;
+	for (var i = start; i < html.length; i++) {
+		var ch = html[i];
+		if (inStr) {
+			if (esc) esc = false;
+			else if (ch === "\\") esc = true;
+			else if (ch === '"') inStr = false;
+		} else if (ch === '"') {
+			inStr = true;
+		} else if (ch === "{") {
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0) {
+				try {
+					return JSON.parse(html.slice(start, i + 1));
+				} catch (e) {
+					return null;
+				}
+			}
+		}
+	}
+	return null;
 }
 
 /**
@@ -1272,11 +1447,11 @@ function searchOverdrive(query) {
 				if (!html || signal.aborted) return;
 
 				var liveBooks = [];
+				var liveStatus = "unrecognized";
 				try {
-					var regexSearch = /window\.OverDrive\.mediaItems\s*=\s*(\{.*\});/;
-					var overdriveSearchResults = html.match(regexSearch);
-					if (overdriveSearchResults) {
-						var jsonResults = JSON.parse(overdriveSearchResults[1]);
+					var jsonResults = extractOverdriveMediaItems(html);
+					if (jsonResults) {
+						liveStatus = "ok";
 						for (var key in jsonResults) {
 							try {
 								var book = jsonResults[key];
@@ -1302,16 +1477,42 @@ function searchOverdrive(query) {
 
 				currentSearchController = null;
 				document.getElementById("search_spinner").classList.add("d-none");
+
+				trackSearchWhenSettled(query, allBooks, liveBooks.length, liveStatus);
 				renderSearchResults(query, allBooks, liveBooks);
 			})
 			.catch(function (err) {
 				if (err.name !== "AbortError") {
 					currentSearchController = null;
 					document.getElementById("search_spinner").classList.add("d-none");
+					trackSearchWhenSettled(query, allBooks, 0, "error");
 					renderSearchResults(query, allBooks, []);
 				}
 			});
 	});
+}
+
+/**
+ * Report a search once the user has stopped typing for a moment, so a
+ * search typed with pauses counts once rather than once per pause. Only
+ * the shape and outcome are tracked, never the query text.
+ *
+ * @param {string}   query       Search text
+ * @param {Object[]} allBooks    Saved scan results (for the local match count)
+ * @param {number}   liveCount   Results from the live library search
+ * @param {string}   liveStatus  "ok" | "error" | "unrecognized"
+ */
+function trackSearchWhenSettled(query, allBooks, liveCount, liveStatus) {
+	clearTimeout(searchAnalyticsTimer);
+	searchAnalyticsTimer = setTimeout(function () {
+		var lowerQuery = query.toLowerCase();
+		var localCount = allBooks.filter(function (b) {
+			if (activeFilter !== "all" && b.type !== activeFilter) return false;
+			return b.title.toLowerCase().indexOf(lowerQuery) !== -1 ||
+				b.author.toLowerCase().indexOf(lowerQuery) !== -1;
+		}).length;
+		Analytics.trackSearchPerformed(query.length, localCount, liveCount, liveStatus);
+	}, 1500);
 }
 
 /**
@@ -1374,7 +1575,7 @@ function diffCards(container, books) {
 		var book = books[n];
 		var card = existingCards[book.URL];
 		if (!card) {
-			card = createBookCard(book, book.available);
+			card = createBookCard(book, book.available, null, "search");
 			card.setAttribute("data-url", book.URL);
 		}
 		container.appendChild(card);
@@ -1580,6 +1781,19 @@ function loadShelvesForUser(goodreadsID) {
 }
 
 /**
+ * Re-render the shelf picker from already-fetched data in storage, applying
+ * the current Pro gating. Used when Pro status changes while the popup is open
+ * so shelves unlock/lock live without needing a re-fetch or a popup reopen.
+ */
+function refreshShelfPickerFromStorage() {
+	chrome.storage.local.get(["availableShelves", "selectedShelves", "shelfCounts"], function (result) {
+		if (result.availableShelves && result.availableShelves.length > 0) {
+			renderShelfPicker(result.availableShelves, result.selectedShelves || ["to-read"], result.shelfCounts || {});
+		}
+	});
+}
+
+/**
  * Render shelf pills in the shelf picker.
  *
  * @param {string[]} shelves   All available shelf names
@@ -1642,10 +1856,9 @@ function renderShelfPicker(shelves, selected, counts) {
 	// Mark sole-checked state for CSS styling
 	listEl.classList.toggle("sole-checked", listEl.querySelectorAll('input:checked').length === 1);
 
-	// Apply Pro gating to newly rendered shelves
-	chrome.storage.local.get(["isPro"], function (result) {
-		applyShelfProGating(!!result.isPro);
-	});
+	// Apply Pro gating to newly rendered shelves using the popup's single
+	// source of truth (avoids racing a second storage read against getUser()).
+	applyShelfProGating(currentIsPro);
 }
 
 /**
@@ -1666,7 +1879,9 @@ function onShelfToggleChange() {
 
 	// Save updated selection
 	var selected = getSelectedShelves();
-	chrome.storage.local.set({ selectedShelves: selected });
+	chrome.storage.local.set({ selectedShelves: selected }, function () {
+		trackSettingChange("shelves");
+	});
 
 	// Update sole-checked styling
 	var listEl = document.getElementById("shelf_list");
@@ -1711,11 +1926,13 @@ function applyShelfProGating(isPro) {
 			nameSpan.forEach(function (s) { s.style.cursor = "pointer"; });
 		}
 	});
-
-	// Save corrected selection (free users forced to to-read only)
-	if (!isPro) {
-		chrome.storage.local.set({ selectedShelves: ["to-read"] });
-	}
+	// NOTE: We intentionally do NOT overwrite the saved `selectedShelves` here.
+	// A transient getUser() failure or a render that runs before Pro status
+	// resolves used to wipe a paying user's multi-shelf selection down to
+	// ["to-read"]. The free-tier limit is now enforced server-side in the
+	// background scan, and the disabled/unchecked toggles already prevent free
+	// users from selecting extra shelves — so the saved selection is preserved
+	// and restored intact if the user (re)gains Pro.
 }
 
 /**
@@ -1752,6 +1969,7 @@ function showPartialOverdriveError(failedLibraries) {
 }
 
 function overdriveError(failedLibraries) {
+	Analytics.trackScreenView("settings_overdrive");
 	document.getElementById("goodreads_fail").classList.add("d-none");
 	var failEl = document.getElementById("overdrive_fail");
 	failEl.classList.remove("d-none");
@@ -1802,6 +2020,9 @@ function overdriveError(failedLibraries) {
  * @param {boolean} isPro  Whether the user has paid for Pro
  */
 function applyProStatus(isPro) {
+	// Record the single source of truth for the rest of the popup.
+	currentIsPro = isPro;
+
 	// Header: show/hide Pro badge
 	document.getElementById("pro_header_badge").classList.toggle("d-none", !isPro);
 

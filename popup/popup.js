@@ -1214,6 +1214,7 @@ function reloadData(goodreadsID, overdriveURLs, shelves, trigger) {
 	settingsPane.classList.remove("show", "active");
 
 	// Switch to Loading view (keep bottom nav visible)
+	hideSkeleton();
 	document.getElementById("pills-tab").classList.remove("d-none");
 	document.getElementById("header_refresh").classList.add("d-none");
 	document.getElementById("home_normal").classList.add("d-none");

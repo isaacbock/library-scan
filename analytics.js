@@ -150,11 +150,33 @@ var Analytics = (function () {
 	// Sending
 	// ---------------------------------------------------------------------
 
-	function baseProps() {
+	/**
+	 * How this copy was installed: "admin" = force-installed by a school or
+	 * company's IT policy (e.g. managed Chromebooks, which reinstall it at
+	 * every sign-in), "normal" = from the Chrome Web Store. getSelf() needs no
+	 * permission.
+	 */
+	var _installTypePromise = null;
+	function getInstallType() {
+		if (_installTypePromise) return _installTypePromise;
+		_installTypePromise = new Promise(function (resolve) {
+			try {
+				chrome.management.getSelf(function (info) {
+					resolve((!chrome.runtime.lastError && info && info.installType) || 'unknown');
+				});
+			} catch (e) {
+				resolve('unknown');
+			}
+		});
+		return _installTypePromise;
+	}
+
+	function baseProps(installType) {
 		return {
 			extension_version: MANIFEST.version,
 			context: IS_POPUP ? 'popup' : 'background',
-			dev_build: IS_DEV_BUILD
+			dev_build: IS_DEV_BUILD,
+			install_type: installType
 		};
 	}
 
@@ -170,7 +192,8 @@ var Analytics = (function () {
 	 */
 	function initPopup() {
 		if (!IS_POPUP || !enabled() || typeof posthog === 'undefined') return Promise.resolve();
-		return getIdentity().then(function (ident) {
+		return Promise.all([getIdentity(), getInstallType()]).then(function (r) {
+			var ident = r[0];
 			posthog.init(POSTHOG_TOKEN, {
 				api_host: apiHost(),
 				bootstrap: { distinctID: ident.id, isIdentifiedID: ident.identified },
@@ -192,7 +215,7 @@ var Analytics = (function () {
 				// typed input. Disclosed in the README and privacy policy.
 				session_recording: { maskAllInputs: false }
 			});
-			var props = baseProps();
+			var props = baseProps(r[1]);
 			if (_screenName) props.screen_name = _screenName;
 			posthog.register(props);
 			// Super properties persist between popup visits; don't let the last
@@ -212,8 +235,9 @@ var Analytics = (function () {
 	 */
 	function send(event, props, opts) {
 		opts = opts || {};
-		return getIdentity().then(function (ident) {
-			var properties = Object.assign(baseProps(), props || {});
+		return Promise.all([getIdentity(), getInstallType()]).then(function (r) {
+			var ident = r[0];
+			var properties = Object.assign(baseProps(r[1]), props || {});
 			properties.$lib = 'library-scan-background';
 			if (!opts.processPerson) properties.$process_person_profile = false;
 

@@ -271,9 +271,12 @@ let currentScanId = 0;
 // Install & uninstall pages
 chrome.runtime.onInstalled.addListener(function (details) {
 	if (details.reason === "install") {
+		// Rejects with "No current window" when no browser window is open, e.g.
+		// force-installed on a managed Chromebook at sign-in. Skip the guide
+		// rather than opening a window, and keep it out of error tracking.
 		chrome.tabs.create({
 			url: "https://isaacbock.com/library-scan#start",
-		});
+		}).catch(function () {});
 		chrome.runtime.setUninstallURL(
 			"https://isaacbock.com/library-scan-uninstall"
 		);
@@ -453,6 +456,7 @@ async function fetchShelves(goodreadsID) {
 	const shelfCounts = {};
 	const shelfRegex = /<user_shelves>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/user_shelves>/g;
 	let totalScanned = 0;
+	let prevFirstGuid = null;
 
 	for (let page = 1; page <= PRO_MAX_RSS_PAGES; page++) {
 		const rssURL =
@@ -466,6 +470,11 @@ async function fetchShelves(goodreadsID) {
 		// Count items to know when we've reached the last page
 		const itemCount = (xml.match(/<item>/g) || []).length;
 		if (itemCount === 0) break;
+
+		// Guard against a feed that ignores &page= and repeats itself
+		const firstGuid = (xml.match(/<guid>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/guid>/) || [])[1];
+		if (firstGuid && firstGuid === prevFirstGuid) break;
+		prevFirstGuid = firstGuid;
 
 		totalScanned += itemCount;
 		// Send progress to popup
@@ -487,8 +496,6 @@ async function fetchShelves(goodreadsID) {
 				shelfCounts["read"] = (shelfCounts["read"] || 0) + 1;
 			}
 		}
-
-		if (itemCount < 100) break;
 	}
 
 	var shelves = Object.keys(shelfCounts);
@@ -694,11 +701,15 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 		const seenTitles = new Set();
 		// Free scans read one feed page; a full page means more books were left out
 		let truncatedByFreeLimit = false;
+		// Pages with fewer than 100 books that still had more pages after them
+		let shortPagesMidShelf = 0;
 
 		// Iterate through each shelf sequentially to avoid rate limiting
 		for (let s = 0; s < shelves.length && myScanId === currentScanId; s++) {
 			const shelfName = shelves[s];
 			console.log("Fetching shelf: " + shelfName);
+			let prevPageShort = false;
+			let prevFirstGuid = null;
 
 			// Fetch up to MAX_RSS_PAGES pages (100 books per page) from Goodreads RSS feed
 			for (let page = 1; page <= MAX_RSS_PAGES && myScanId === currentScanId; page++) {
@@ -764,10 +775,20 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 
 				console.log("Goodreads RSS shelf=" + shelfName + " page " + page + ": " + itemCount + " books");
 
-				// If fewer than 100 items, this was the last page
-				if (itemCount < 100) {
+				// Only an empty page marks the end. Goodreads sometimes leaves a
+				// book out of a page (99 instead of 100) even when more pages
+				// follow; count those so analytics shows how often it happens.
+				if (prevPageShort) {
+					shortPagesMidShelf++;
+				}
+				prevPageShort = itemCount < 100;
+
+				// Guard against a feed that ignores &page= and repeats itself
+				const firstGuid = (xmlString.match(/<guid>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/guid>/) || [])[1];
+				if (firstGuid && firstGuid === prevFirstGuid) {
 					break;
 				}
+				prevFirstGuid = firstGuid;
 			}
 		}
 
@@ -783,6 +804,7 @@ async function queryGoodreads(goodreadsID, overdriveURLs, shelves, myScanId, sou
 
 		scanMeta.booksChecked = ToRead.length;
 		scanMeta.truncatedByFreeLimit = truncatedByFreeLimit;
+		scanMeta.shortPagesMidShelf = shortPagesMidShelf;
 		scanMeta.shelfCount = shelves.length;
 
 		if (ToRead.length === 0) {
@@ -910,6 +932,9 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 						encodeURIComponent(ToRead[i].author)
 				);
 				const html = await res.text();
+				// Cancelled while this request was in flight: stop before sending
+				// progress, which would put the popup back on the loading view
+				if (myScanId !== currentScanId) break;
 
 				// Identify book availability data in response
 				let overdriveJSONresults = extractOverdriveMediaItems(html);
@@ -991,6 +1016,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 				var pct = Math.floor(2 + (completedRequests / totalRequests) * 97);
 				chrome.action.setBadgeText({ text: pct + "%" });
 			} catch (err) {
+				if (myScanId !== currentScanId) break;
 				console.log("OverDrive fetch Error for " + overdriveURL + ": ", err);
 				Analytics.trackLibraryScanFailed(scanMeta, {
 					library_domain: hostOf(overdriveURL),
@@ -1009,7 +1035,8 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 		// No search page had OverDrive's book data: either the library's site
 		// sent us somewhere else (a bad or retired library address), or it's
 		// the right site and OverDrive changed its page format
-		if (!libraryError && libraryMatchCount === 0 && ToRead.length > 0) {
+		// (A cancelled scan stops early with no matches, so skip it.)
+		if (!libraryError && libraryMatchCount === 0 && ToRead.length > 0 && myScanId === currentScanId) {
 			console.log("No OverDrive data found for any book at " + overdriveURL + " — treating as failed library.");
 			const libraryHost = hostOf(overdriveURL);
 			const redirected = !!(lastPage && lastPage.finalHost && lastPage.finalHost !== libraryHost);
@@ -1145,6 +1172,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 				failed_domains: failedLibraries.map(hostOf),
 				duration_ms: Date.now() - scanMeta.startedAt,
 				truncated_by_free_limit: !!scanMeta.truncatedByFreeLimit,
+				goodreads_short_pages: scanMeta.shortPagesMidShelf || 0,
 				is_first_scan: !prev.BookAvailability,
 			});
 

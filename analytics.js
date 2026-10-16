@@ -496,6 +496,17 @@ var Analytics = (function () {
 		capture('scan_cancelled', scanProps(scan));
 	}
 
+	/**
+	 * A scan died without finishing: Chrome restarted the service worker
+	 * mid-scan, so its in-memory state (and the scan) was lost. Found on the
+	 * next 1-minute check, so only the stored ID and start time are known.
+	 *
+	 * @param {Object} props { scan_id, running_minutes }
+	 */
+	function trackScanAbandoned(props) {
+		capture('scan_abandoned', Object.assign({ reason: 'worker_restarted' }, props || {}));
+	}
+
 	// ---------------------------------------------------------------------
 	// Engagement
 	// ---------------------------------------------------------------------
@@ -648,6 +659,7 @@ var Analytics = (function () {
 		trackScanFailed: trackScanFailed,
 		trackLibraryScanFailed: trackLibraryScanFailed,
 		trackScanCancelled: trackScanCancelled,
+		trackScanAbandoned: trackScanAbandoned,
 		trackBookClicked: trackBookClicked,
 		trackSearchPerformed: trackSearchPerformed,
 		trackSettingsChanged: trackSettingsChanged,

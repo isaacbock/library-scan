@@ -50,6 +50,8 @@ idle                                 Re-show a notification you missed while awa
 
 ## Changelog
 
+- Version 2.1.2 (10/16/26)
+  - Bug fixes & stability improvements
 - Version 2.1.1 (10/15/26)
   - Bug fixes & stability improvements
 - Version 2.1.0 (10/10/26)

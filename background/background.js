@@ -206,6 +206,19 @@ const FREE_MAX_RSS_PAGES = 1;
 const PRO_MAX_RSS_PAGES = 100;
 
 /**
+ * @type {number} Wait before retrying an OverDrive search that hit a brief
+ * server error
+ */
+const OVERDRIVE_RETRY_DELAY_MS = 2000;
+
+/**
+ * @type {number} Books in a row that can fail (even after a retry) before a
+ * library counts as down for this scan. Caps a real outage at a handful of
+ * requests per library instead of one per book.
+ */
+const OVERDRIVE_MAX_CONSECUTIVE_FAILURES = 3;
+
+/**
  * @type {number} Refresh wait duration in minutes -- defaults to refreshing every 24 hours
  */
 // Auto-refresh interval: 24 hours
@@ -369,15 +382,23 @@ function getElapsedTime() {
 				console.log("Elapsed Time Since Last Refresh: " + elapsedTime + " min");
 
 				// Auto-refresh only for Pro users
-				chrome.storage.session.get(["currently_scanning", "scan_started_at"], async function (scanResult) {
-					// A scan flag older than STALE_SCAN_MS means the service
-					// worker was likely killed mid-scan — don't let it block
-					// auto-refresh forever.
+				chrome.storage.session.get(["currently_scanning", "scan_started_at", "scan_id"], async function (scanResult) {
+					// A scan running in this service worker is alive however long
+					// it takes (every request times out on its own), so leave it
+					// alone. The flag is only stale when Chrome restarted the
+					// worker mid-scan, which resets isScanningLocal — then don't
+					// let the dead scan block auto-refresh forever. (Clearing it
+					// for long live scans restarted them every ~11 minutes.)
 					let scanning = scanResult.currently_scanning;
-					if (scanning && (!scanResult.scan_started_at || (Date.now() - scanResult.scan_started_at) > STALE_SCAN_MS)) {
+					if (scanning && !isScanningLocal && (!scanResult.scan_started_at || (Date.now() - scanResult.scan_started_at) > STALE_SCAN_MS)) {
 						scanning = false;
-						isScanningLocal = false;
 						chrome.storage.session.set({ currently_scanning: false });
+						Analytics.trackScanAbandoned({
+							scan_id: scanResult.scan_id,
+							running_minutes: scanResult.scan_started_at
+								? Math.round((Date.now() - scanResult.scan_started_at) / 60000)
+								: undefined,
+						});
 					}
 
 					// Gate auto-refresh on the cached Pro status; a live getUser()
@@ -530,7 +551,9 @@ function refresh(goodreadsID, overdriveURLs, shelves, source, sessionId, trigger
 	}
 
 	isScanningLocal = true;
-	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now() });
+	const scanAnalyticsId = "scan_" + Date.now();
+	// scan_id lets a restarted service worker report which scan it lost
+	chrome.storage.session.set({ currently_scanning: true, scan_started_at: Date.now(), scan_id: scanAnalyticsId });
 
 	// Invalidate any in-flight scan and capture this scan's ID
 	const myScanId = ++currentScanId;
@@ -540,7 +563,7 @@ function refresh(goodreadsID, overdriveURLs, shelves, source, sessionId, trigger
 	// session (and recording) that started it. isPro and the book counts
 	// are filled in as the scan learns them.
 	const scanMeta = {
-		id: "scan_" + Date.now(),
+		id: scanAnalyticsId,
 		startedAt: Date.now(),
 		sessionId: sessionId,
 		source: source || "unknown",
@@ -900,11 +923,17 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 	let totalRequests = ToRead.length * overdriveURLs.length;
 	let completedRequests = 0;
 	let failedLibraries = [];
+	// Books skipped after a brief OverDrive failure, across all libraries
+	let skippedBooks = 0;
 
 	for (let libIdx = 0; libIdx < overdriveURLs.length && myScanId === currentScanId; libIdx++) {
 		let overdriveURL = overdriveURLs[libIdx];
 		let libraryError = false;
 		let libraryMatchCount = 0;
+		// Books in a row that failed even after a retry; at
+		// OVERDRIVE_MAX_CONSECUTIVE_FAILURES the library counts as down
+		let consecutiveFailures = 0;
+		let librarySkippedBooks = 0;
 		// Where the last search page actually came from, to tell a moved or
 		// retired library apart from an OverDrive page format change
 		let lastPage = null;
@@ -924,13 +953,24 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 
 		for (let i = 0; i < ToRead.length && !libraryError && myScanId === currentScanId; i++) {
 			try {
-				const res = await fetchWithTimeout(
+				const searchURL =
 					overdriveURL +
-						"/search/title?query=" +
-						encodeURIComponent(ToRead[i].title) +
-						"&creator=" +
-						encodeURIComponent(ToRead[i].author)
-				);
+					"/search/title?query=" +
+					encodeURIComponent(ToRead[i].title) +
+					"&creator=" +
+					encodeURIComponent(ToRead[i].author);
+				let res;
+				try {
+					res = await fetchWithTimeout(searchURL);
+				} catch (firstErr) {
+					// A quick server hiccup (502/503/504 or a dropped connection)
+					// often clears on its own: wait briefly and try once more
+					if (!isRetryableOverdriveError(firstErr) || myScanId !== currentScanId) throw firstErr;
+					await new Promise(function (resolve) { setTimeout(resolve, OVERDRIVE_RETRY_DELAY_MS); });
+					if (myScanId !== currentScanId) break;
+					res = await fetchWithTimeout(searchURL);
+				}
+				consecutiveFailures = 0;
 				const html = await res.text();
 				// Cancelled while this request was in flight: stop before sending
 				// progress, which would put the popup back on the loading view
@@ -1018,15 +1058,46 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 			} catch (err) {
 				if (myScanId !== currentScanId) break;
 				console.log("OverDrive fetch Error for " + overdriveURL + ": ", err);
+				consecutiveFailures++;
+
+				// A brief failure (server error, dropped connection, timeout):
+				// skip this book and carry on, unless several in a row say the
+				// library is down. Rate limits (429) and other 4xx responses
+				// (e.g. a bad library address) give up on the library at once.
+				const brief = isRetryableOverdriveError(err) || !!err.timedOut;
+				if (brief && consecutiveFailures < OVERDRIVE_MAX_CONSECUTIVE_FAILURES) {
+					librarySkippedBooks++;
+					skippedBooks++;
+					completedRequests++;
+					chrome.runtime.sendMessage({
+						msg: "In Progress",
+						count: completedRequests,
+						total: totalRequests,
+						bookCount: i + 1,
+						bookTotal: ToRead.length,
+						libraryName: overdriveURL,
+						libraryIndex: libIdx + 1,
+						libraryCount: overdriveURLs.length,
+					}).catch(() => {});
+					var pct = Math.floor(2 + (completedRequests / totalRequests) * 97);
+					chrome.action.setBadgeText({ text: pct + "%" });
+					continue;
+				}
+
 				Analytics.trackLibraryScanFailed(scanMeta, {
 					library_domain: hostOf(overdriveURL),
 					error_type: err.timedOut ? "timeout" : err.status ? "http" : "network",
 					error_message: String(err.message || "").substring(0, 200),
 					http_status: err.status,
 					books_checked: i,
+					consecutive_failures: consecutiveFailures,
+					books_skipped: librarySkippedBooks,
 				});
 				libraryError = true;
 				failedLibraries.push(overdriveURL);
+				// The whole library counts as failed, so its skips aren't
+				// reported again as individually skipped books
+				skippedBooks -= librarySkippedBooks;
 				// Skip remaining books for this library
 				completedRequests = (libIdx + 1) * ToRead.length;
 			}
@@ -1036,7 +1107,8 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 		// sent us somewhere else (a bad or retired library address), or it's
 		// the right site and OverDrive changed its page format
 		// (A cancelled scan stops early with no matches, so skip it.)
-		if (!libraryError && libraryMatchCount === 0 && ToRead.length > 0 && myScanId === currentScanId) {
+		// (Skip it too when every book was skipped: nothing was read.)
+		if (!libraryError && libraryMatchCount === 0 && ToRead.length > librarySkippedBooks && myScanId === currentScanId) {
 			console.log("No OverDrive data found for any book at " + overdriveURL + " — treating as failed library.");
 			const libraryHost = hostOf(overdriveURL);
 			const redirected = !!(lastPage && lastPage.finalHost && lastPage.finalHost !== libraryHost);
@@ -1173,6 +1245,7 @@ async function queryOverdrive(ToRead, overdriveURLs, myScanId, goodreadsID, scan
 				duration_ms: Date.now() - scanMeta.startedAt,
 				truncated_by_free_limit: !!scanMeta.truncatedByFreeLimit,
 				goodreads_short_pages: scanMeta.shortPagesMidShelf || 0,
+				books_skipped: skippedBooks,
 				is_first_scan: !prev.BookAvailability,
 			});
 
@@ -1280,6 +1353,21 @@ function extractOverdriveMediaItems(html) {
 		}
 	}
 	return null;
+}
+
+/**
+ * Whether a failed OverDrive search is worth one retry: a server-side error
+ * (502/503/504) or a dropped connection. Timeouts already waited a full
+ * minute, and 429 (rate limited) or other 4xx responses won't clear by
+ * retrying right away.
+ *
+ * @param {Error} err  Error thrown by fetchWithTimeout
+ * @returns {boolean}
+ */
+function isRetryableOverdriveError(err) {
+	if (!err || err.timedOut) return false;
+	if (!err.status) return true; // network error
+	return err.status === 502 || err.status === 503 || err.status === 504;
 }
 
 /**
